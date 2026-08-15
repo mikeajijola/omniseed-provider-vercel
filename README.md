@@ -4,7 +4,7 @@ This narrow Provider observes the `omniseed_os` connector resource selected for 
 
 The Provider reads Vercel deployment metadata using `VERCEL_TOKEN`, then performs unauthenticated HTTP reachability and company-binding checks. The token is read only from the process environment and is never included in messages or evidence.
 
-`provider.apply` intentionally returns an error. OmniSeed does not yet give this Provider an approved immutable build artifact or source revision deployment contract, so it cannot truthfully create a deployment. Existing deployments can still be observed without claiming they were applied by OmniSeed.
+`provider.apply` accepts only an approved immutable GitHub source contract: repository identity, numeric Vercel integration repository ID, and a full commit SHA. It asks Vercel to create that exact deployment and returns the resulting deployment identity. It never chooses a branch tip, rebuilds an approval, or treats deployment creation as proof of health; OmniSeed must observe afterward.
 
 Run with one JSON-RPC 2.0 message per line:
 

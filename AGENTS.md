@@ -5,7 +5,7 @@
 - Never infer health from desired configuration.
 - Never expose `VERCEL_TOKEN` in protocol messages, diagnostics, or evidence.
 - Observation must verify both Vercel deployment state and HTTP company binding.
-- This implementation is read-only. `apply` must fail honestly until an approved artifact/source deployment contract exists.
+- `apply` may deploy only an approved immutable source commit through the configured Vercel project integration.
 - Live tests are read-only unless a human explicitly authorises a sandbox mutation.
 
 Run `npm test` before proposing a change.

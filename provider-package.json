@@ -8,5 +8,5 @@
   "configurationSchema": "./provider-configuration.schema.json",
   "observationTypes": ["vercel_deployment_state", "company_binding_state"],
   "evidenceTypes": ["vercel_api_response", "http_company_binding"],
-  "permissions": ["vercel.deployment.read", "http.endpoint.read"]
+  "permissions": ["vercel.deployment.read", "vercel.deployment.create", "http.endpoint.read"]
 }

@@ -4,6 +4,7 @@
 import datetime
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -37,12 +38,19 @@ class NetworkClient:
         self.token = token if token is not None else os.environ.get("VERCEL_TOKEN")
 
     def json_request(self, url, authenticated=False, timeout=10):
+        return self.request(url, authenticated=authenticated, timeout=timeout)
+
+    def request(self, url, authenticated=False, timeout=10, method="GET", body=None):
         headers = {"Accept": "application/json", "User-Agent": "omniseed-provider-vercel/0.1"}
         if authenticated:
             if not self.token:
                 raise ProviderError("Vercel credentials are unavailable", "not_configured")
             headers["Authorization"] = "Bearer " + self.token
-        request = urllib.request.Request(url, headers=headers)
+        encoded = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            encoded = json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(url, headers=headers, data=encoded, method=method)
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 body = response.read().decode("utf-8")
@@ -85,9 +93,11 @@ class VercelProvider:
     def _issues(self, action):
         issues = []
         spec = ((action or {}).get("desired") or {}).get("spec") or {}
-        for field in ["projectId", "deploymentUrl", "companyBindingUrl", "expectedCompanyId", "expectedRepository"]:
+        for field in ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "deploymentUrl", "companyBindingUrl", "expectedCompanyId", "expectedRepository"]:
             if not spec.get(field):
                 issues.append({"code": "missing_field", "field": field, "message": field + " is required"})
+        if spec.get("sourceCommitSha") and not re.fullmatch(r"[0-9a-f]{40}", str(spec["sourceCommitSha"])):
+            issues.append({"code": "source_not_immutable", "field": "sourceCommitSha", "message": "sourceCommitSha must be a full 40-character commit SHA"})
         if action.get("family") != FAMILY or action.get("resourceId") != RESOURCE_ID:
             issues.append({"code": "unsupported_action", "message": "Only the connectors/omniseed_os resource is supported"})
         if spec.get("expectedCompanyId") and self.company_id and spec["expectedCompanyId"] != self.company_id:
@@ -95,14 +105,14 @@ class VercelProvider:
         return issues
 
     def status(self):
-        required = ["projectId", "deploymentUrl", "companyBindingUrl", "expectedCompanyId", "expectedRepository"]
+        required = ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "deploymentUrl", "companyBindingUrl", "expectedCompanyId", "expectedRepository"]
         configured = all(self.configuration.get(key) for key in required) and bool(self.client.token)
         connected = healthy = False
         if configured:
             try:
                 snapshot = self._observe_spec(self.configuration)
                 connected = snapshot["vercelApiReachable"]
-                healthy = snapshot["deploymentReady"] and snapshot["httpReachable"] and snapshot["companyBindingMatches"]
+                healthy = snapshot["deploymentReady"] and snapshot["sourceMatches"] and snapshot["httpReachable"] and snapshot["companyBindingMatches"]
             except ProviderError:
                 pass
         return {"implementation_available": True, "configured": configured, "connected": connected, "healthy": healthy}
@@ -118,19 +128,29 @@ class VercelProvider:
             "actionId": action.get("id"),
             "valid": validation["valid"],
             "issues": validation["issues"],
-            "mode": "observe_existing",
-            "mutationSupported": False
+            "mode": "deploy_immutable_source",
+            "mutationSupported": True,
+            "source": {"repository": (((action or {}).get("desired") or {}).get("spec") or {}).get("sourceRepository"), "commitSha": (((action or {}).get("desired") or {}).get("spec") or {}).get("sourceCommitSha")}
         }
 
     def apply(self, action):
         validation = self.validate(action)
         if not validation["valid"]:
             raise ProviderError("Action is invalid", "invalid_action", {"issues": validation["issues"]})
-        raise ProviderError(
-            "Vercel deployment mutation is unsupported: no approved immutable artifact or source deployment contract was supplied",
-            "mutation_unsupported",
-            {"mode": "read_only", "resourceId": RESOURCE_ID}
-        )
+        spec = action["desired"]["spec"]
+        body = {
+            "name": spec["projectId"], "project": spec["projectId"], "target": spec.get("target", "production"),
+            "gitSource": {"type": "github", "repoId": spec["sourceRepositoryId"], "ref": spec["sourceCommitSha"]},
+            "meta": {"omniseedCompanyId": spec["expectedCompanyId"], "omniseedSourceRepository": spec["sourceRepository"], "omniseedSourceCommit": spec["sourceCommitSha"]}
+        }
+        endpoint = "https://api.vercel.com/v13/deployments"
+        if spec.get("teamId"):
+            endpoint += "?teamId=" + urllib.parse.quote(spec["teamId"], safe="")
+        _, deployment = self.client.request(endpoint, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="POST", body=body)
+        deployment_id = deployment.get("id") or deployment.get("uid")
+        if not deployment_id:
+            raise ProviderError("Vercel did not return a deployment identity", "invalid_remote_response", {"host": "api.vercel.com"})
+        return {"providerResourceId": "vercel://" + spec["projectId"] + "/deployments/" + deployment_id, "status": "submitted", "attributes": {"spec": {**spec, "deploymentId": deployment_id}, "sourceRepository": spec["sourceRepository"], "sourceCommitSha": spec["sourceCommitSha"], "submittedAt": now()}}
 
     def _deployment_endpoint(self, spec):
         team = spec.get("teamId")
@@ -156,28 +176,34 @@ class VercelProvider:
             else:
                 raise
         actual_company = binding.get("companyId") or (binding.get("company") or {}).get("id")
-        actual_repository = binding.get("canonicalRepository") or binding.get("repository") or (binding.get("company") or {}).get("repository")
+        binding_repository = binding.get("canonicalRepository") or binding.get("repository") or (binding.get("company") or {}).get("repository")
         actual_environment = binding.get("environment")
         expected_environment = spec.get("expectedEnvironment")
-        binding_matches = actual_company == spec["expectedCompanyId"] and actual_repository == spec["expectedRepository"] and (not expected_environment or actual_environment == expected_environment)
+        binding_matches = actual_company == spec["expectedCompanyId"] and binding_repository == spec["expectedRepository"] and (not expected_environment or actual_environment == expected_environment)
         state = deployment.get("readyState") or deployment.get("state")
+        deployment_meta = deployment.get("meta") or {}
+        git_source = deployment.get("gitSource") or {}
+        actual_commit = git_source.get("ref") or deployment_meta.get("githubCommitSha") or deployment_meta.get("gitCommitSha")
+        source_repository = git_source.get("repo") or deployment_meta.get("githubRepo") or deployment_meta.get("gitRepo")
+        source_matches = actual_commit == spec.get("sourceCommitSha") and (not source_repository or source_repository == spec.get("sourceRepository"))
         return {
             "projectId": spec["projectId"], "teamId": spec.get("teamId"),
             "deploymentId": deployment.get("id") or deployment.get("uid") or spec.get("deploymentId"),
             "deploymentUrl": spec["deploymentUrl"], "deploymentState": state,
+            "sourceRepository": source_repository, "sourceCommitSha": actual_commit, "sourceMatches": source_matches,
             "deploymentReady": state == "READY", "vercelApiReachable": True,
             "httpStatus": http_status, "httpReachable": 200 <= http_status < 400,
             "companyBindingUrl": spec["companyBindingUrl"], "companyId": actual_company,
-            "canonicalRepository": actual_repository, "environment": actual_environment,
+            "canonicalRepository": binding_repository, "environment": actual_environment,
             "companyBindingMatches": binding_matches, "observedAt": now()
         }
 
     def observe(self, resource):
         spec = (resource.get("attributes") or {}).get("spec") or resource.get("spec") or self.configuration
         snapshot = self._observe_spec(spec)
-        healthy = snapshot["deploymentReady"] and snapshot["httpReachable"] and snapshot["companyBindingMatches"]
+        healthy = snapshot["deploymentReady"] and snapshot["sourceMatches"] and snapshot["httpReachable"] and snapshot["companyBindingMatches"]
         evidence = [
-            {"type": "vercel_api_response", "source": PROVIDER_ID, "projectId": snapshot["projectId"], "deploymentId": snapshot["deploymentId"], "state": snapshot["deploymentState"], "observedAt": snapshot["observedAt"]},
+            {"type": "vercel_api_response", "source": PROVIDER_ID, "projectId": snapshot["projectId"], "deploymentId": snapshot["deploymentId"], "state": snapshot["deploymentState"], "sourceRepository": snapshot["sourceRepository"], "sourceCommitSha": snapshot["sourceCommitSha"], "sourceMatchesDesired": snapshot["sourceMatches"], "observedAt": snapshot["observedAt"]},
             {"type": "http_company_binding", "source": PROVIDER_ID, "url": snapshot["companyBindingUrl"], "httpStatus": snapshot["httpStatus"], "companyId": snapshot["companyId"], "canonicalRepository": snapshot["canonicalRepository"], "environment": snapshot["environment"], "matchesDesired": snapshot["companyBindingMatches"], "observedAt": snapshot["observedAt"]}
         ]
         return {"status": "healthy" if healthy else "degraded", "checkedAt": snapshot["observedAt"], "providerResourceId": "vercel://" + snapshot["projectId"] + "/deployments/" + str(snapshot["deploymentId"]), "evidence": evidence, "snapshot": snapshot}
