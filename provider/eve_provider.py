@@ -110,8 +110,8 @@ class EveProvider:
             "observationTypes": ["eve_agent_runtime_state"],
             "evidenceTypes": ["eve_agent_runtime_health", "eve_agent_semantic_turn"],
             "offerings": [{"family": "agents", "id": "semantic_agent_runtime", "resource": {
-                "family": "agents", "id": self.configuration.get("agentIdentity", "agent"),
-                "name": "EVE semantic agent runtime", "offers": ["stewardship_agency"], "risk": "high",
+                "family": "agents", "id": self.configuration.get("resourceId", "agent"),
+                "name": "EVE semantic agent runtime", "offers": self.configuration.get("offers", []), "risk": "high",
                 "spec": {"companyRef": self.configuration.get("companyRef"), "agentIdentity": self.configuration.get("agentIdentity"), "runtimeUrl": self.configuration.get("runtimeUrl")}
             }}],
             "operations": OPERATIONS,
@@ -120,7 +120,7 @@ class EveProvider:
 
     def validate(self, action=None):
         issues = []
-        for field in ("runtimeUrl", "companyRef", "agentIdentity", "authTokenEnv"):
+        for field in ("runtimeUrl", "companyRef", "agentIdentity", "resourceId", "offers", "authTokenEnv"):
             if not self.configuration.get(field):
                 issues.append({"code": "missing_field", "field": field, "message": f"{field} is required"})
         if self.configuration.get("runtimeUrl") and not self.configuration["runtimeUrl"].startswith("https://"):

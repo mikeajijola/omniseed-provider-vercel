@@ -2,11 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["runtimeUrl", "companyRef", "agentIdentity", "authTokenEnv"],
+  "required": ["runtimeUrl", "companyRef", "agentIdentity", "resourceId", "offers", "authTokenEnv"],
   "properties": {
     "runtimeUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
     "companyRef": { "type": "string", "minLength": 1 },
     "agentIdentity": { "type": "string", "minLength": 1 },
+    "resourceId": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "offers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" } },
     "authTokenEnv": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
   }
 }

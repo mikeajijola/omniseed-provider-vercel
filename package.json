@@ -4,15 +4,9 @@
   "private": false,
   "description": "Replaceable EVE implementation of OmniSeed's agents primitive-family contract.",
   "scripts": {
-    "test": "python3 -m unittest discover -s test -p 'test_*.py' && node --test test/*.test.mjs",
-    "build:runtime": "eve build"
-  },
-  "dependencies": {
-    "@ai-sdk/google": "^4.0.31",
-    "eve": "^0.29.5"
+    "test": "python3 -m unittest discover -s test -p 'test_*.py'"
   },
   "files": [
-    "agent",
     "provider",
     "provider-package.json",
     "provider-configuration.schema.json",
