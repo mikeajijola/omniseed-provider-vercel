@@ -1,0 +1,12 @@
+{
+  "manifestVersion": "1.0",
+  "id": "vercel_interface",
+  "version": "0.1.0-alpha.0",
+  "engineCompatibility": "omniseed.provider.protocol/1.0",
+  "primitiveFamilies": ["connectors"],
+  "operations": ["interface.deployment.observe", "interface.deployment.status", "interface.deployment.evidence"],
+  "configurationSchema": "./provider-configuration.schema.json",
+  "observationTypes": ["vercel_deployment_state", "company_binding_state"],
+  "evidenceTypes": ["vercel_api_response", "http_company_binding"],
+  "permissions": ["vercel.deployment.read", "http.endpoint.read"]
+}

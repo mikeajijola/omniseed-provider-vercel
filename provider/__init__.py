@@ -1,0 +1,1 @@
+"""OmniSeed Vercel Provider."""
