@@ -11,7 +11,7 @@ import urllib.parse
 import urllib.request
 
 PROTOCOL = "omniseed.provider.protocol/1.0"
-PROVIDER_ID = "vercel_interface"
+PROVIDER_ID = "vercel"
 VERSION = "0.1.0-alpha.0"
 FAMILY = "connectors"
 RESOURCE_ID = "omniseed_os"
