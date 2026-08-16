@@ -29,6 +29,8 @@ class ProviderTests(unittest.TestCase):
         result = self.provider().initialize({"protocolVersion": MODULE.PROTOCOL, "configuration": config(), "context": {"companyId": "example_company"}})
         manifest = json.loads((MODULE_PATH.parents[1] / "provider-package.json").read_text())
         self.assertEqual(result["primitiveFamilies"], ["agents"])
+        self.assertEqual(result["provider"]["id"], "vercel")
+        self.assertEqual(manifest["id"], "vercel")
         self.assertEqual(result["primitiveFamilies"], manifest["primitiveFamilies"])
         self.assertEqual(result["operations"], manifest["operations"])
         self.assertNotIn("github", json.dumps(result).lower())
@@ -53,6 +55,8 @@ class ProviderTests(unittest.TestCase):
         result = self.provider().observe({"providerResourceId": "eve://lily"})
         self.assertEqual(result["status"], "healthy")
         self.assertEqual(result["evidence"][0]["type"], "eve_agent_runtime_health")
+        self.assertEqual(result["evidence"][0]["source"], "vercel")
+        self.assertEqual(result["evidence"][0]["product"], "eve")
         self.assertEqual(result["snapshot"]["runtime"]["agent"]["framework"], "eve")
 
     def test_semantic_turn_requires_declared_actor_and_returns_evidence(self):

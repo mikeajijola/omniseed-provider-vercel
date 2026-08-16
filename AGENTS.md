@@ -1,8 +1,8 @@
-# Working on the superseded Eve adapter experiment
+# Working on the Vercel Eve agent implementation
 
-- This repository name and its legacy manifest model a product as a Provider and must not be copied, registered, or used as architectural precedent.
-- Eve is a Vercel framework beneath the Vercel Provider. It is not Lily, Company Stewardship, company state, or a Provider.
-- Any retained adapter code must migrate under a Vercel Provider implementation before production use.
+- Provider organisation and canonical Provider ID: Vercel / `vercel`.
+- This package implements the `agents` primitive-family contract using Vercel's Eve framework.
+- Eve is not Lily, Company Stewardship, company state, or a Provider.
 - Bootstrap inputs are company reference, organisational agent identity, and authenticated access to OmniSeed.
 - Agent turns must use governed OmniSeed operations. Never add direct GitHub or deployment-provider mutation.
 - Never print credentials or include them in observations/evidence.

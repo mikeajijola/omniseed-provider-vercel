@@ -1,8 +1,8 @@
 {
-  "name": "@omniseed/provider-eve-reference",
+  "name": "@omniseed/vercel-eve-agent-implementation",
   "version": "0.1.0-alpha.0",
   "private": false,
-  "description": "Replaceable EVE implementation of OmniSeed's agents primitive-family contract.",
+  "description": "Vercel Provider implementation of OmniSeed's agents primitive-family contract using Eve.",
   "scripts": {
     "test": "python3 -m unittest discover -s test -p 'test_*.py'"
   },
