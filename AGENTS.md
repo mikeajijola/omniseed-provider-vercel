@@ -3,7 +3,7 @@
 - Provider organisation and canonical Provider ID: Vercel / `vercel`.
 - Eve, Functions, AI Gateway, and deployment services are Vercel products/services/frameworks, never separate Providers.
 
-- This Provider implements only the canonical `connectors` family.
+- This Provider implements the canonical `agents` and `connectors` families.
 - The Capability is `operate_omniseed_ecosystem`; Vercel is not a Capability.
 - Never infer health from desired configuration.
 - Never expose `VERCEL_TOKEN` in protocol messages, diagnostics, or evidence.

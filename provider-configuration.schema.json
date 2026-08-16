@@ -1,24 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://omniseed.org/providers/vercel/configuration-v1.json",
-  "title": "Vercel interface observation configuration",
+  "title": "Vercel Provider process configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "expectedCompanyId", "expectedRepository"],
   "properties": {
-    "projectId": { "type": "string", "minLength": 1 },
     "teamId": { "type": "string", "minLength": 1 },
-    "deploymentId": { "type": "string", "minLength": 1 },
-    "sourceRepository": { "type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$" },
-    "sourceRepositoryId": { "type": "integer", "minimum": 1 },
-    "sourceCommitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "target": { "enum": ["production", "preview"], "default": "production" },
-    "deploymentUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
-    "companyBindingUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
-    "companyBindingPath": { "type": "string", "pattern": "^/", "default": "/api/company" },
-    "expectedCompanyId": { "type": "string", "minLength": 1 },
-    "expectedRepository": { "type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$" },
-    "expectedEnvironment": { "type": "string", "minLength": 1 },
-    "timeoutSeconds": { "type": "number", "minimum": 1, "maximum": 30, "default": 10 }
+    "runtimeAuthTokenEnv": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
   }
 }

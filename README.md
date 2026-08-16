@@ -1,22 +1,14 @@
 # OmniSeed Vercel Provider
 
-Provider declaration:
+This is the single Provider package for the supplying organisation Vercel, with canonical Provider ID `vercel`.
 
-- Supplying organisation: Vercel
-- Canonical Provider ID: `vercel`
-- Supported primitive families in this package: `connectors`
-- Products/services used: Vercel deployment services and Functions for the OmniSeed OS interface runtime
+- `agents` maps to Eve, Vercel Functions, and AI Gateway.
+- `connectors` maps to Vercel Functions and deployment services.
 
-Vercel may also supply an `agents` implementation using its Eve framework, model access through AI Gateway, and Functions/runtime services. Eve, Functions, AI Gateway, and deployment services remain products beneath Vercel; none is a separate Provider. See the authoritative [Provider semantics](https://github.com/mikeajijola/omniseed-ecosystem/blob/main/docs/provider-semantics.md).
+Provider configuration contains only organisation-wide Vercel team/authentication settings. Approved actions contain the resource-specific project identity, numeric Vercel Git integration repository ID, full commit SHA, company and Agent identities, environment, expected endpoints, and secret-reference names.
 
-This narrow Provider realises and observes the `omniseed_os` connector resource selected for the OmniSeed Ecosystem's human operating interface. The connector is the governed human-to-company boundary. Deployment is implementation work and resulting runtime state beneath that connector; deployment itself is not redefined as a primitive. Vercel is neither a Capability nor a reason to add a primitive family.
+`plan` distinguishes project creation from reuse and reports the exact immutable revision, environment binding names, deployment impact, and expected evidence. `apply` uses Vercel `/v11/projects` and `/v13/deployments`; it never invokes `eve deploy`, reads a local source tree, accepts a branch tip, or binds a pre-existing runtime URL. Secret values stay server-side.
 
-The Provider reads Vercel deployment metadata using `VERCEL_TOKEN`, then performs unauthenticated HTTP reachability and company-binding checks. The token is read only from the process environment and is never included in messages or evidence.
+`observe` starts from the deployment binding persisted by OmniSeed and independently verifies Vercel deployment/source identity. Connector observations verify company binding. Agent observations use authenticated Eve health and info endpoints and verify company, Agent, environment, and Lily source identity. `agent.semantic_turn` likewise requires that persisted Engine resource binding; a browser or caller cannot choose a runtime URL.
 
-`provider.apply` accepts only an approved immutable GitHub source contract: repository identity, numeric Vercel integration repository ID, and a full commit SHA. It asks Vercel to create that exact deployment and returns the resulting deployment identity. It never chooses a branch tip, rebuilds an approval, or treats deployment creation as proof of health; OmniSeed must observe afterward.
-
-Run with one JSON-RPC 2.0 message per line:
-
-```sh
-python provider/vercel_provider.py
-```
+Run one JSON-RPC 2.0 message per line with `python provider/vercel_provider.py`. Run tests with `npm test`.

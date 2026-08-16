@@ -1,12 +1,12 @@
 {
   "manifestVersion": "1.0",
   "id": "vercel",
-  "version": "0.1.0-alpha.0",
+  "version": "0.2.0-alpha.0",
   "engineCompatibility": "omniseed.provider.protocol/1.0",
-  "primitiveFamilies": ["connectors"],
-  "operations": ["interface.deployment.observe", "interface.deployment.status", "interface.deployment.evidence"],
+  "primitiveFamilies": ["agents", "connectors"],
+  "operations": ["interface.deployment.observe", "interface.deployment.status", "interface.deployment.evidence", "agent.semantic_turn"],
   "configurationSchema": "./provider-configuration.schema.json",
-  "observationTypes": ["vercel_deployment_state", "company_binding_state"],
-  "evidenceTypes": ["vercel_api_response", "http_company_binding"],
-  "permissions": ["vercel.deployment.read", "vercel.deployment.create", "http.endpoint.read"]
+  "observationTypes": ["vercel_deployment_state", "company_binding_state", "eve_agent_runtime_state"],
+  "evidenceTypes": ["vercel_api_response", "http_company_binding", "eve_agent_runtime_health", "eve_agent_semantic_turn"],
+  "permissions": ["vercel.project.read", "vercel.project.create", "vercel.deployment.read", "vercel.deployment.create", "http.endpoint.read", "omniseed.operation.invoke"]
 }
