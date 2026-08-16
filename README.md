@@ -1,5 +1,14 @@
 # OmniSeed Vercel Provider
 
+Provider declaration:
+
+- Supplying organisation: Vercel
+- Canonical Provider ID: `vercel`
+- Supported primitive families in this package: `connectors`
+- Products/services used: Vercel deployment services and Functions for the OmniSeed OS interface runtime
+
+Vercel may also supply an `agents` implementation using its Eve framework, model access through AI Gateway, and Functions/runtime services. Eve, Functions, AI Gateway, and deployment services remain products beneath Vercel; none is a separate Provider. See the authoritative [Provider semantics](https://github.com/mikeajijola/omniseed-ecosystem/blob/main/docs/provider-semantics.md).
+
 This narrow Provider realises and observes the `omniseed_os` connector resource selected for the OmniSeed Ecosystem's human operating interface. The connector is the governed human-to-company boundary. Deployment is implementation work and resulting runtime state beneath that connector; deployment itself is not redefined as a primitive. Vercel is neither a Capability nor a reason to add a primitive family.
 
 The Provider reads Vercel deployment metadata using `VERCEL_TOKEN`, then performs unauthenticated HTTP reachability and company-binding checks. The token is read only from the process environment and is never included in messages or evidence.
