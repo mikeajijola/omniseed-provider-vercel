@@ -1,6 +1,6 @@
 {
   "manifestVersion": "1.0",
-  "id": "vercel_interface",
+  "id": "vercel",
   "version": "0.1.0-alpha.0",
   "engineCompatibility": "omniseed.provider.protocol/1.0",
   "primitiveFamilies": ["connectors"],
