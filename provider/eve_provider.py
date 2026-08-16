@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Narrow EVE Provider for OmniSeed Provider Protocol v1."""
+"""Vercel agents-family implementation using the Eve framework."""
 
 import datetime
 import json
@@ -104,7 +104,7 @@ class EveProvider:
         self.company_id = (params.get("context") or {}).get("companyId")
         return {
             "protocolVersion": PROTOCOL,
-            "provider": {"id": "eve_agent_runtime", "name": "EVE Agent Runtime Provider", "version": "0.1.0-alpha.0"},
+            "provider": {"id": "vercel", "name": "Vercel", "version": "0.1.0-alpha.0"},
             "primitiveFamilies": ["agents"],
             "configurationSchema": "./provider-configuration.schema.json",
             "observationTypes": ["eve_agent_runtime_state"],
@@ -163,7 +163,7 @@ class EveProvider:
             health = self._client().health()
             info = self._client().info()
             healthy = health.get("ok") is True
-            evidence = {"type": "eve_agent_runtime_health", "source": "eve_agent_runtime", "runtimeUrl": self.configuration.get("runtimeUrl"), "health": health, "runtime": info, "observedAt": checked_at}
+            evidence = {"type": "eve_agent_runtime_health", "source": "vercel", "product": "eve", "runtimeUrl": self.configuration.get("runtimeUrl"), "health": health, "runtime": info, "observedAt": checked_at}
             return {"status": "healthy" if healthy else "degraded", "checkedAt": checked_at, "providerResourceId": (resource or {}).get("providerResourceId"), "evidence": [evidence], "snapshot": {"health": health, "runtime": info}}
         except EveError as error:
             return {"status": "unavailable", "checkedAt": checked_at, "providerResourceId": (resource or {}).get("providerResourceId"), "evidence": [], "error": str(error)}
@@ -177,7 +177,7 @@ class EveProvider:
         if not isinstance(message, str) or not message.strip():
             raise EveError("A non-empty message is required")
         result = self._client().turn(message)
-        return {**result, "evidence": {"type": "eve_agent_semantic_turn", "source": "eve_agent_runtime", "sessionId": result["sessionId"], "turnId": result["turnId"], "observedAt": now()}}
+        return {**result, "evidence": {"type": "eve_agent_semantic_turn", "source": "vercel", "product": "eve", "sessionId": result["sessionId"], "turnId": result["turnId"], "observedAt": now()}}
 
 
 def respond(request_id, result=None, error=None):
