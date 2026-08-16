@@ -4,7 +4,7 @@
   "title": "Vercel interface observation configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "deploymentUrl", "companyBindingUrl", "expectedCompanyId", "expectedRepository"],
+  "required": ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "expectedCompanyId", "expectedRepository"],
   "properties": {
     "projectId": { "type": "string", "minLength": 1 },
     "teamId": { "type": "string", "minLength": 1 },
@@ -15,6 +15,7 @@
     "target": { "enum": ["production", "preview"], "default": "production" },
     "deploymentUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
     "companyBindingUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
+    "companyBindingPath": { "type": "string", "pattern": "^/", "default": "/api/company" },
     "expectedCompanyId": { "type": "string", "minLength": 1 },
     "expectedRepository": { "type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$" },
     "expectedEnvironment": { "type": "string", "minLength": 1 },

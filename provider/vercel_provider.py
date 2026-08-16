@@ -93,7 +93,7 @@ class VercelProvider:
     def _issues(self, action):
         issues = []
         spec = ((action or {}).get("desired") or {}).get("spec") or {}
-        for field in ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "deploymentUrl", "companyBindingUrl", "expectedCompanyId", "expectedRepository"]:
+        for field in ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "expectedCompanyId", "expectedRepository"]:
             if not spec.get(field):
                 issues.append({"code": "missing_field", "field": field, "message": field + " is required"})
         if spec.get("sourceCommitSha") and not re.fullmatch(r"[0-9a-f]{40}", str(spec["sourceCommitSha"])):
@@ -105,7 +105,7 @@ class VercelProvider:
         return issues
 
     def status(self):
-        required = ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "deploymentUrl", "companyBindingUrl", "expectedCompanyId", "expectedRepository"]
+        required = ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "expectedCompanyId", "expectedRepository"]
         configured = all(self.configuration.get(key) for key in required) and bool(self.client.token)
         connected = healthy = False
         if configured:
@@ -148,9 +148,12 @@ class VercelProvider:
             endpoint += "?teamId=" + urllib.parse.quote(spec["teamId"], safe="")
         _, deployment = self.client.request(endpoint, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="POST", body=body)
         deployment_id = deployment.get("id") or deployment.get("uid")
-        if not deployment_id:
+        deployment_host = deployment.get("url")
+        if not deployment_id or not deployment_host:
             raise ProviderError("Vercel did not return a deployment identity", "invalid_remote_response", {"host": "api.vercel.com"})
-        return {"providerResourceId": "vercel://" + spec["projectId"] + "/deployments/" + deployment_id, "status": "submitted", "attributes": {"spec": {**spec, "deploymentId": deployment_id}, "sourceRepository": spec["sourceRepository"], "sourceCommitSha": spec["sourceCommitSha"], "submittedAt": now()}}
+        deployment_url = deployment_host if deployment_host.startswith("https://") else "https://" + deployment_host
+        binding_url = deployment_url.rstrip("/") + spec.get("companyBindingPath", "/api/company")
+        return {"providerResourceId": "vercel://" + spec["projectId"] + "/deployments/" + deployment_id, "status": "submitted", "attributes": {"spec": {**spec, "deploymentId": deployment_id, "deploymentUrl": deployment_url, "companyBindingUrl": binding_url}, "sourceRepository": spec["sourceRepository"], "sourceCommitSha": spec["sourceCommitSha"], "submittedAt": now()}}
 
     def _deployment_endpoint(self, spec):
         team = spec.get("teamId")
@@ -161,6 +164,8 @@ class VercelProvider:
         return "https://api.vercel.com" + path + (("?" if "?" not in path else "&") + "teamId=" + urllib.parse.quote(team, safe="") if team else "")
 
     def _observe_spec(self, spec):
+        if not spec.get("deploymentUrl") or not spec.get("companyBindingUrl"):
+            raise ProviderError("Observation requires the deployment URL returned by apply or an explicitly configured existing deployment URL", "observation_target_missing")
         timeout = spec.get("timeoutSeconds", 10)
         _, deployment_response = self.client.json_request(self._deployment_endpoint(spec), authenticated=True, timeout=timeout)
         deployment = deployment_response
@@ -184,13 +189,14 @@ class VercelProvider:
         deployment_meta = deployment.get("meta") or {}
         git_source = deployment.get("gitSource") or {}
         actual_commit = git_source.get("ref") or deployment_meta.get("githubCommitSha") or deployment_meta.get("gitCommitSha")
+        actual_repository_id = git_source.get("repoId") or deployment_meta.get("githubRepoId") or deployment_meta.get("gitRepoId")
         source_repository = git_source.get("repo") or deployment_meta.get("githubRepo") or deployment_meta.get("gitRepo")
-        source_matches = actual_commit == spec.get("sourceCommitSha") and (not source_repository or source_repository == spec.get("sourceRepository"))
+        source_matches = actual_commit == spec.get("sourceCommitSha") and str(actual_repository_id) == str(spec.get("sourceRepositoryId")) and (not source_repository or source_repository == spec.get("sourceRepository"))
         return {
             "projectId": spec["projectId"], "teamId": spec.get("teamId"),
             "deploymentId": deployment.get("id") or deployment.get("uid") or spec.get("deploymentId"),
             "deploymentUrl": spec["deploymentUrl"], "deploymentState": state,
-            "sourceRepository": source_repository, "sourceCommitSha": actual_commit, "sourceMatches": source_matches,
+            "sourceRepository": source_repository, "sourceRepositoryId": actual_repository_id, "sourceCommitSha": actual_commit, "sourceMatches": source_matches,
             "deploymentReady": state == "READY", "vercelApiReachable": True,
             "httpStatus": http_status, "httpReachable": 200 <= http_status < 400,
             "companyBindingUrl": spec["companyBindingUrl"], "companyId": actual_company,

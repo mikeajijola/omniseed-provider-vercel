@@ -24,7 +24,7 @@ class FakeClient:
 
     def json_request(self, url, authenticated=False, timeout=10):
         if "api.vercel.com" in url:
-            return 200, {"id": "dpl_os", "readyState": self.state, "gitSource": {"repo": "mikeajijola/omniseedos", "ref": "a" * 40}}
+            return 200, {"id": "dpl_os", "readyState": self.state, "gitSource": {"repo": "mikeajijola/omniseedos", "repoId": 123456, "ref": "a" * 40}}
         if url.endswith("/api/company"):
             return 200, self.binding
         return 200, {"page": True}
@@ -32,7 +32,7 @@ class FakeClient:
     def request(self, url, authenticated=False, timeout=10, method="GET", body=None):
         self.requests.append({"url": url, "authenticated": authenticated, "method": method, "body": body})
         if method == "POST":
-            return 200, {"id": "dpl_created", "readyState": "QUEUED"}
+            return 200, {"id": "dpl_created", "url": "new-os.example.test", "readyState": "QUEUED"}
         return self.json_request(url, authenticated, timeout)
 
 
@@ -73,6 +73,8 @@ class ProviderTests(unittest.TestCase):
         result = self.provider(client).apply(action())
         self.assertEqual(result["status"], "submitted")
         self.assertEqual(result["attributes"]["sourceCommitSha"], "a" * 40)
+        self.assertEqual(result["attributes"]["spec"]["deploymentUrl"], "https://new-os.example.test")
+        self.assertEqual(result["attributes"]["spec"]["companyBindingUrl"], "https://new-os.example.test/api/company")
         request = client.requests[0]
         self.assertEqual(request["method"], "POST")
         self.assertEqual(request["body"]["gitSource"], {"type": "github", "repoId": 123456, "ref": "a" * 40})
@@ -103,11 +105,23 @@ class ProviderTests(unittest.TestCase):
         class Drifted(FakeClient):
             def json_request(self, url, authenticated=False, timeout=10):
                 if "api.vercel.com" in url:
-                    return 200, {"id": "dpl_os", "readyState": "READY", "gitSource": {"repo": "mikeajijola/omniseedos", "ref": "b" * 40}}
+                    return 200, {"id": "dpl_os", "readyState": "READY", "gitSource": {"repo": "mikeajijola/omniseedos", "repoId": 123456, "ref": "b" * 40}}
                 return super().json_request(url, authenticated, timeout)
         result = self.provider(Drifted()).observe({"spec": CONFIG})
         self.assertEqual(result["status"], "degraded")
         self.assertFalse(result["snapshot"]["sourceMatches"])
+
+    def test_observe_requires_real_target_and_exact_repository_id(self):
+        without_target = {key: value for key, value in CONFIG.items() if key not in {"deploymentUrl", "companyBindingUrl"}}
+        with self.assertRaises(ProviderError) as raised:
+            self.provider().observe({"spec": without_target})
+        self.assertEqual(raised.exception.code, "observation_target_missing")
+        class WrongRepository(FakeClient):
+            def json_request(self, url, authenticated=False, timeout=10):
+                if "api.vercel.com" in url:
+                    return 200, {"id": "dpl_os", "readyState": "READY", "gitSource": {"repo": "mikeajijola/omniseedos", "repoId": 999, "ref": "a" * 40}}
+                return super().json_request(url, authenticated, timeout)
+        self.assertEqual(self.provider(WrongRepository()).observe({"spec": CONFIG})["status"], "degraded")
 
     def test_status_keeps_lifecycle_facts_separate(self):
         status = self.provider().status()
