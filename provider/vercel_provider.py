@@ -335,7 +335,7 @@ class VercelProvider:
                 "OMNISEED_STEWARD_ACTOR_ID": spec["stewardActorId"],
                 "OMNISEED_READ_ONLY_INSPECTION": "true" if spec.get("readOnlyInspection") else "false",
             }
-            return [{"key": key, "value": value, "type": "plain", "target": [spec.get("target", "production")]} for key, value in sorted(public.items())]
+            return [{"key": key, "value": value, "type": "encrypted", "target": [spec.get("target", "production")]} for key, value in sorted(public.items())]
         if family != "agents":
             return []
         secret_references = spec.get("secretReferences") or []
@@ -350,7 +350,7 @@ class VercelProvider:
             "OMNISEED_OPERATION_ENDPOINT": spec["operationEndpoint"],
             "OMNISEED_OPERATION_CREDENTIAL_ENV": spec["operationCredentialReference"],
         }
-        values = [{"key": key, "value": value, "type": "plain", "target": [spec.get("target", "production")]} for key, value in sorted(public.items())]
+        values = [{"key": key, "value": value, "type": "encrypted", "target": [spec.get("target", "production")]} for key, value in sorted(public.items())]
         values.extend({"key": reference, "value": self._secret_value(reference), "type": "sensitive", "target": [spec.get("target", "production")]} for reference in sorted(secret_references))
         return values
 
