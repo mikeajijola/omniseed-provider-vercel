@@ -2,7 +2,7 @@
   "manifestVersion": "1.0",
   "id": "vercel",
   "organisation": "Vercel",
-  "version": "0.2.0-alpha.2",
+  "version": "0.2.0-alpha.3",
   "engineCompatibility": "omniseed.provider.protocol/1.0",
   "primitiveFamilies": ["agents", "connectors"],
   "implementations": [
