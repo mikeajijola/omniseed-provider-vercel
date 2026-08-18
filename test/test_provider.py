@@ -54,8 +54,7 @@ class FakeClient:
             if self.fail_deploy: raise ProviderError("api failed", "remote_http_error", {"status": 500})
             return 200, {"id": "dpl_1", "url": "lily.example.test"}
         if "/v13/deployments/" in url:
-            repository = "mikeajijola/omniseed-lily" if "lily" in url or True else "mikeajijola/omniseedos"
-            return 200, {"id": "dpl_1", "readyState": self.state, "gitSource": {"repo": repository, "repoId": 123456, "ref": self.commit}}
+            return 200, {"id": "dpl_1", "readyState": self.state, "gitSource": {"repo": "omniseed-lily", "repoId": 123456, "ref": self.commit}, "meta": {"omniseedSourceRepository": "mikeajijola/omniseed-lily"}}
         if url.endswith("/health"): return 200, {"ok": self.state == "READY"}
         if url.endswith("/info"): return 200, self.runtime
         if url.endswith("/eve/v1/session") and method == "POST": return 200, {"ok": True, "sessionId": "ses_1"}
