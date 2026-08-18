@@ -13,7 +13,7 @@ import urllib.request
 
 PROTOCOL = "omniseed.provider.protocol/1.0"
 PROVIDER_ID = "vercel"
-VERSION = "0.2.0-alpha.4"
+VERSION = "0.2.0-alpha.5"
 FAMILIES = ["agents", "connectors"]
 METHODS = [
     "provider.initialize", "provider.status", "provider.validate", "provider.plan",
@@ -317,7 +317,7 @@ class VercelProvider:
             "family": action.get("family"), "resourceId": action.get("resourceId"),
             "project": {"id": spec.get("projectId"), "change": project_change},
             "source": {"repository": spec.get("sourceRepository"), "repositoryId": spec.get("sourceRepositoryId"), "commitSha": spec.get("sourceCommitSha")},
-            "environmentBindings": sorted(secret_references) if action.get("family") == "agents" else sorted(item["key"] for item in self._environment_values(spec, "connectors")),
+            "environmentBindings": self._environment_binding_names(spec, action.get("family")),
             "deploymentImpact": {"target": spec.get("target", "production"), "environment": spec.get("expectedEnvironment")},
             "expectedEvidence": ["vercel_api_response"] + (["eve_agent_runtime_health"] if action.get("family") == "agents" else ["http_company_binding"])
         }
@@ -339,13 +339,20 @@ class VercelProvider:
             raise ProviderError("A declared secret reference is unavailable", "secret_unavailable", {"reference": reference})
         return value
 
-    def _environment_values(self, spec, family):
+    def _environment_binding_names(self, spec, family):
+        secret_references = spec.get("secretReferences") or []
+        if isinstance(secret_references, dict):
+            secret_references = list(secret_references)
+        public = self._public_environment(spec, family)
+        return sorted([*public, *secret_references])
+
+    def _public_environment(self, spec, family):
         if family == "connectors":
             repository = spec["expectedRepository"]
             revision = spec["desiredRevision"]
             path = str(spec.get("companyDefinitionPath") or "omniform.yaml").lstrip("/")
             definition_url = f"https://raw.githubusercontent.com/{repository}/{revision}/{urllib.parse.quote(path, safe='/')}"
-            public = {
+            return {
                 "OMNISEED_COMPANY_DEFINITION_URL": definition_url,
                 "OMNISEED_DESIRED_REVISION": revision,
                 "OMNISEED_ENVIRONMENT": spec["expectedEnvironment"],
@@ -353,15 +360,9 @@ class VercelProvider:
                 "OMNISEED_STEWARD_ACTOR_ID": spec["stewardActorId"],
                 "OMNISEED_READ_ONLY_INSPECTION": "true" if spec.get("readOnlyInspection") else "false",
             }
-            values = [{"key": key, "value": value, "type": "encrypted", "target": [spec.get("target", "production")]} for key, value in sorted(public.items()) if value is not None]
-            values.extend({"key": reference, "value": self._secret_value(reference), "type": "sensitive", "target": [spec.get("target", "production")]} for reference in sorted(spec.get("secretReferences") or []))
-            return values
         if family != "agents":
-            return []
-        secret_references = spec.get("secretReferences") or []
-        if isinstance(secret_references, dict):
-            secret_references = list(secret_references)
-        public = {
+            return {}
+        return {
             "OMNISEED_COMPANY_REF": spec["expectedCompanyId"],
             "OMNISEED_AGENT_IDENTITY": spec["agentIdentity"],
             "OMNISEED_ENVIRONMENT": spec["expectedEnvironment"],
@@ -373,19 +374,26 @@ class VercelProvider:
             "OMNISEED_SESSION_JWT_ISSUER": spec["sessionIssuer"],
             "OMNISEED_SESSION_JWT_AUDIENCE": spec["sessionAudience"],
         }
-        values = [{"key": key, "value": value, "type": "encrypted", "target": [spec.get("target", "production")]} for key, value in sorted(public.items())]
-        values.extend({"key": reference, "value": self._secret_value(reference), "type": "sensitive", "target": [spec.get("target", "production")]} for reference in sorted(secret_references))
+    def _environment_values(self, spec, family, existing_secret_references=None):
+        target = spec.get("target", "production")
+        public = self._public_environment(spec, family)
+        values = [{"key": key, "value": value, "type": "encrypted", "target": [target]} for key, value in sorted(public.items()) if value is not None]
+        secret_references = spec.get("secretReferences") or []
+        if isinstance(secret_references, dict):
+            secret_references = list(secret_references)
+        preserved = set(existing_secret_references or [])
+        values.extend({"key": reference, "value": self._secret_value(reference), "type": "sensitive", "target": [target]} for reference in sorted(secret_references) if reference not in preserved)
         return values
 
     def _upsert_environment(self, spec, family):
-        values = self._environment_values(spec, family)
-        if not values:
-            return
         base = "https://api.vercel.com/v10/projects/" + urllib.parse.quote(spec["projectId"], safe="") + "/env"
         query = self._team_query(spec)
         _, response = self.client.request(base + query, authenticated=True, timeout=spec.get("timeoutSeconds", 10))
         items = response if isinstance(response, list) else response.get("envs", [])
         existing = {(item.get("key"), item.get("gitBranch")): item for item in items}
+        target = spec.get("target", "production")
+        existing_secrets = {item.get("key") for item in items if item.get("key") in (spec.get("secretReferences") or []) and target in (item.get("target") or [])}
+        values = self._environment_values(spec, family, existing_secrets)
         for value in values:
             current = existing.get((value["key"], value.get("gitBranch")))
             if current and current.get("id"):

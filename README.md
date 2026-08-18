@@ -24,5 +24,11 @@ referenced secret to the Agent deployment. A connector realising OmniSeed OS
 may declare the same secret reference so the OS can mint short-lived,
 company-scoped session tokens. The value remains ordinary per-environment
 configuration and never enters Omniform, a plan, runtime state, or evidence.
+Secret values may be supplied either to the Provider process or pre-provisioned
+directly in the declared Vercel project and target environment. Existing secret
+bindings are preserved without reading, exporting, or rewriting their values;
+missing bindings must be available to the Provider process and fail closed
+otherwise. Public bindings derived from the approved declaration are still
+reconciled on every apply.
 
 Run one JSON-RPC 2.0 message per line with `python provider/vercel_provider.py`. Run tests with `npm test`.
