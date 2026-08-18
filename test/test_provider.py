@@ -211,6 +211,7 @@ class ProviderTests(unittest.TestCase):
         result = self.provider(client).invoke("interface.deployment.promote", {"resourceBinding": connector}, {"actorId": "operator"})
         promotion = [request for request in client.requests if request["method"] == "POST" and "/promote/" in request["url"]]
         self.assertEqual(len(promotion), 1)
+        self.assertIn("/projects/prj_1/promote/", promotion[0]["url"])
         self.assertEqual(result["status"], "promoted")
         self.assertEqual(result["evidence"]["deploymentId"], connector["attributes"]["spec"]["deploymentId"])
 
