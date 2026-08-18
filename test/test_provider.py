@@ -186,7 +186,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(values["OMNISEED_COMPANY_DEFINITION_URL"]["value"], f"https://raw.githubusercontent.com/mikeajijola/omniseed-ecosystem-company/{'b' * 40}/omniform.yaml")
         self.assertEqual(values["OMNISEED_STEWARD_ACTOR_ID"]["value"], "lily")
         self.assertEqual(values["OMNISEED_READ_ONLY_INSPECTION"]["value"], "true")
-        self.assertTrue(all(value["type"] == "plain" for value in values.values()))
+        self.assertTrue(all(value["type"] == "encrypted" for value in values.values()))
 
     def test_connector_observation_reads_engine_instance_projection(self):
         client = FakeClient()
