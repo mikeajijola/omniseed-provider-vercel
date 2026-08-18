@@ -381,7 +381,11 @@ class VercelProvider:
         body = {
             "name": spec["projectId"], "project": spec["projectId"], "target": spec.get("target", "production"),
             "gitSource": {"type": "github", "repoId": spec["sourceRepositoryId"], "ref": spec["sourceCommitSha"], "sha": spec["sourceCommitSha"]},
-            "meta": {"omniseedFamily": family, "omniseedResourceId": action["resourceId"], "omniseedCompanyId": spec["expectedCompanyId"], "omniseedAgentIdentity": spec.get("agentIdentity"), "omniseedSourceRepository": spec["sourceRepository"], "omniseedSourceCommit": spec["sourceCommitSha"]}
+            "meta": {key: value for key, value in {
+                "omniseedFamily": family, "omniseedResourceId": action["resourceId"],
+                "omniseedCompanyId": spec["expectedCompanyId"], "omniseedAgentIdentity": spec.get("agentIdentity"),
+                "omniseedSourceRepository": spec["sourceRepository"], "omniseedSourceCommit": spec["sourceCommitSha"]
+            }.items() if value is not None}
         }
         if family == "agents":
             body["projectSettings"] = {"framework": "eve", "buildCommand": "npm run build:runtime", "outputDirectory": ".output", "nodeVersion": "24.x"}
