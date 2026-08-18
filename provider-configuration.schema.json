@@ -6,6 +6,11 @@
   "additionalProperties": false,
   "properties": {
     "teamId": { "type": "string", "minLength": 1 },
-    "runtimeAuthTokenEnv": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+    "runtimeAuthTokenEnv": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+    "secretReferenceEnvironment": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Z][A-Z0-9_]*$" },
+      "additionalProperties": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+    }
   }
 }
