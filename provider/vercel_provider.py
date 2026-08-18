@@ -362,9 +362,9 @@ class VercelProvider:
         query = self._team_query(spec)
         _, response = self.client.request(base + query, authenticated=True, timeout=spec.get("timeoutSeconds", 10))
         items = response if isinstance(response, list) else response.get("envs", [])
-        existing = {(item.get("key"), tuple(item.get("target") or [])): item for item in items}
+        existing = {(item.get("key"), item.get("gitBranch")): item for item in items}
         for value in values:
-            current = existing.get((value["key"], tuple(value["target"])))
+            current = existing.get((value["key"], value.get("gitBranch")))
             if current and current.get("id"):
                 endpoint = "https://api.vercel.com/v9/projects/" + urllib.parse.quote(spec["projectId"], safe="") + "/env/" + urllib.parse.quote(current["id"], safe="") + query
                 self.client.request(endpoint, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="PATCH", body=value)

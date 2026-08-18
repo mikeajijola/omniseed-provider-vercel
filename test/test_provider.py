@@ -133,7 +133,7 @@ class ProviderTests(unittest.TestCase):
 
     @patch.dict(os.environ, {"OMNISEED_OPERATION_TOKEN": "operation-secret", "EVE_MODEL_TOKEN": "model-secret"})
     def test_apply_is_idempotent_for_existing_project_and_environment_and_propagates_api_failure(self):
-        client = FakeClient(project_exists=True, existing_env=[{"id": "env_1", "key": "OMNISEED_OPERATION_TOKEN", "target": ["production"]}])
+        client = FakeClient(project_exists=True, existing_env=[{"id": "env_1", "key": "OMNISEED_OPERATION_TOKEN", "target": ["production", "preview"]}])
         self.provider(client).apply(action())
         self.assertFalse(any(r["method"] == "POST" and r["url"].endswith("/v11/projects") for r in client.requests))
         self.assertTrue(any(r["method"] == "PATCH" and "/env/env_1" in r["url"] for r in client.requests))
