@@ -169,9 +169,11 @@ class ProviderTests(unittest.TestCase):
             with self.subTest(client=client): self.assertEqual(self.provider(client).observe(binding())["status"], "degraded")
 
     def test_connector_apply_and_observe_remain_supported(self):
-        applied = self.provider().apply(action("connectors"))
-        connector_binding = applied
         client = FakeClient()
+        applied = self.provider(client).apply(action("connectors"))
+        deployment = [request for request in client.requests if request["method"] == "POST" and "/v13/deployments" in request["url"]][0]
+        self.assertTrue(all(isinstance(value, str) for value in deployment["body"]["meta"].values()))
+        connector_binding = applied
         # The fake deployment source defaults to Lily; use metadata-free equality by adapting expected repo.
         connector_binding["attributes"]["spec"]["sourceRepository"] = "mikeajijola/omniseed-lily"
         observed = self.provider(client).observe(connector_binding)
