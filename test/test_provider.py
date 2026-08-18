@@ -10,8 +10,20 @@ from provider.vercel_provider import PROTOCOL, ProviderError, VercelProvider
 
 SHA = "a" * 40
 BASE = {"projectId": "lily-production", "sourceRepository": "mikeajijola/omniseed-lily", "sourceRepositoryId": 123456, "sourceCommitSha": SHA, "expectedCompanyId": "omniseed_ecosystem", "expectedEnvironment": "production", "target": "production"}
-AGENT = {**BASE, "agentIdentity": "lily", "secretReferences": {"OMNISEED_OPERATION_TOKEN": "sec_operation_token", "EVE_MODEL_TOKEN": "sec_model_token"}, "healthPath": "/eve/v1/health", "infoPath": "/eve/v1/info"}
+AGENT = {**BASE, "agentIdentity": "lily", "secretReferences": ["OMNISEED_OPERATION_TOKEN", "EVE_MODEL_TOKEN"], "observationCredentialReference": "EVE_MODEL_TOKEN", "healthPath": "/eve/v1/health", "infoPath": "/eve/v1/info", "operationEndpoint": "https://omniseed-os.vercel.app", "operationCredentialReference": "OMNISEED_OPERATION_TOKEN"}
 CONNECTOR = {**BASE, "sourceRepository": "mikeajijola/omniseedos", "expectedRepository": "mikeajijola/omniseed-ecosystem-company"}
+CANONICAL_AGENT = {
+    "kind": "ai_agent", "organisationalIdentity": "lily",
+    "bootstrap": {"company": "omniseed_ecosystem", "identity": "lily", "omniseedEndpoint": "https://omniseed-os.vercel.app", "credentialReference": "OMNISEED_OPERATION_TOKEN"},
+    "implementation": {"framework": "eve", "repository": "https://github.com/mikeajijola/omniseed-lily.git", "repositoryId": 123456, "revision": SHA},
+    "runtime": {"project": "lily-production", "environment": "production", "provider": "vercel", "secretReferences": ["OMNISEED_OPERATION_TOKEN", "LILY_RUNTIME_OBSERVATION_TOKEN"], "observationCredentialReference": "LILY_RUNTIME_OBSERVATION_TOKEN", "expectedEndpoints": {"health": "https://omniseed-lily.vercel.app/health", "info": "https://omniseed-lily.vercel.app/info"}}
+}
+CANONICAL_CONNECTOR = {
+    "project": "omniseed-os", "environment": "production", "provider": "vercel",
+    "source": {"repository": "https://github.com/mikeajijola/omniseedos.git", "repositoryId": 987654, "revision": SHA},
+    "companyBinding": {"companyId": "omniseed_ecosystem", "repository": "https://github.com/mikeajijola/omniseed-ecosystem-company.git"},
+    "expectedEndpoints": {"company": "https://omniseed-os.vercel.app/api/company"}
+}
 
 
 def action(family="agents", spec=None, resource_id=None):
@@ -20,14 +32,21 @@ def action(family="agents", spec=None, resource_id=None):
 
 class FakeClient:
     token = "vercel-secret-must-not-leak"
-    def __init__(self, project_exists=True, state="READY", runtime=None, commit=SHA, fail_deploy=False):
+    def __init__(self, project_exists=True, state="READY", runtime=None, commit=SHA, fail_deploy=False, existing_env=None):
         self.project_exists, self.state, self.commit, self.fail_deploy = project_exists, state, commit, fail_deploy
         self.runtime = runtime or {"companyRef": "omniseed_ecosystem", "agentIdentity": "lily", "environment": "production", "source": {"repository": "mikeajijola/omniseed-lily", "commitSha": SHA}, "agent": {"framework": "eve"}}
         self.requests = []
+        self.existing_env = existing_env or []
 
     def request(self, url, authenticated=False, timeout=10, method="GET", body=None, token=None):
         self.requests.append({"url": url, "authenticated": authenticated, "method": method, "body": body, "token": token})
-        if "/v11/projects/" in url and method == "GET":
+        if url.endswith("/v2/user"):
+            return 200, {"user": {"id": "user_1"}}
+        if "/v10/projects/" in url and url.split("?")[0].endswith("/env"):
+            if method == "GET": return 200, {"envs": self.existing_env}
+            if method == "POST": return 200, {"created": True}
+        if "/v9/projects/" in url and "/env/" in url and method == "PATCH": return 200, {"updated": True}
+        if "/v9/projects/" in url and method == "GET":
             if not self.project_exists: raise ProviderError("missing", "remote_http_error", {"status": 404})
             return 200, {"id": "prj_1", "name": "lily-production"}
         if url.endswith("/v11/projects") and method == "POST": return 200, {"id": "prj_created"}
@@ -46,6 +65,10 @@ class FakeClient:
 
     def json_request(self, url, authenticated=False, timeout=10, token=None):
         return self.request(url, authenticated, timeout, token=token)
+
+    def text_request(self, url, authenticated=False, timeout=10, method="GET", body=None, token=None):
+        self.requests.append({"url": url, "authenticated": authenticated, "method": method, "body": body, "token": token})
+        return 200, '\n'.join([json.dumps({"type": "message.appended", "turnId": "turn_1", "data": {"messageDelta": "hello"}}), json.dumps({"type": "message.completed", "turnId": "turn_1"})])
 
 
 def binding(spec=AGENT, family="agents"):
@@ -72,6 +95,15 @@ class ProviderTests(unittest.TestCase):
         self.assertFalse(self.provider().validate(action("workflows"))["valid"])
         self.assertFalse(self.provider().validate(action("agents", {**AGENT, "runtimeUrl": "https://caller.test"}))["valid"])
 
+    def test_canonical_omniform_resources_normalize_without_shadow_deployment_state(self):
+        agent = action("agents", CANONICAL_AGENT)
+        connector = action("connectors", CANONICAL_CONNECTOR)
+        self.assertTrue(self.provider().validate(agent)["valid"])
+        self.assertTrue(self.provider().validate(connector)["valid"])
+        planned = self.provider().plan(agent)
+        self.assertEqual(planned["project"]["id"], "lily-production")
+        self.assertEqual(planned["source"], {"repository": "mikeajijola/omniseed-lily", "repositoryId": 123456, "commitSha": SHA})
+
     def test_plan_reports_create_or_reuse_exact_revision_bindings_and_evidence(self):
         reused = self.provider().plan(action())
         created = self.provider(FakeClient(project_exists=False)).plan(action())
@@ -81,22 +113,37 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(reused["environmentBindings"], ["EVE_MODEL_TOKEN", "OMNISEED_OPERATION_TOKEN"])
         self.assertIn("eve_agent_runtime_health", reused["expectedEvidence"])
 
-    def test_apply_creates_project_and_deploys_exact_sha_without_secret_values(self):
+    @patch.dict(os.environ, {"OMNISEED_OPERATION_TOKEN": "operation-secret", "EVE_MODEL_TOKEN": "model-secret"})
+    def test_apply_creates_project_configures_environment_and_deploys_exact_sha_without_evidence_leak(self):
         client = FakeClient(project_exists=False)
         result = self.provider(client).apply(action())
         self.assertEqual(result["attributes"]["projectChange"], "create")
         deployment = [r for r in client.requests if r["method"] == "POST" and "/v13/deployments" in r["url"]][0]
         self.assertEqual(deployment["body"]["gitSource"]["ref"], SHA)
+        self.assertEqual(deployment["body"]["gitSource"]["sha"], SHA)
         payload = json.dumps(deployment["body"])
-        self.assertIn("sec_operation_token", payload)
+        self.assertNotIn("operation-secret", payload)
+        self.assertNotIn("model-secret", payload)
+        environment_requests = [r for r in client.requests if "/env" in r["url"] and r["method"] in {"POST", "PATCH"}]
+        self.assertTrue(any(r["body"].get("key") == "OMNISEED_OPERATION_TOKEN" and r["body"].get("type") == "sensitive" and r["body"].get("value") == "operation-secret" for r in environment_requests))
+        self.assertEqual(deployment["body"]["projectSettings"]["framework"], "eve")
         self.assertNotIn(FakeClient.token, payload)
         self.assertNotIn("actual-secret", payload)
+        self.assertNotIn("operation-secret", json.dumps(result))
 
-    def test_apply_is_idempotent_for_existing_project_and_propagates_api_failure(self):
-        client = FakeClient(project_exists=True)
+    @patch.dict(os.environ, {"OMNISEED_OPERATION_TOKEN": "operation-secret", "EVE_MODEL_TOKEN": "model-secret"})
+    def test_apply_is_idempotent_for_existing_project_and_environment_and_propagates_api_failure(self):
+        client = FakeClient(project_exists=True, existing_env=[{"id": "env_1", "key": "OMNISEED_OPERATION_TOKEN", "target": ["production"]}])
         self.provider(client).apply(action())
         self.assertFalse(any(r["method"] == "POST" and r["url"].endswith("/v11/projects") for r in client.requests))
+        self.assertTrue(any(r["method"] == "PATCH" and "/env/env_1" in r["url"] for r in client.requests))
         with self.assertRaises(ProviderError): self.provider(FakeClient(fail_deploy=True)).apply(action())
+
+    def test_apply_fails_closed_when_a_declared_secret_reference_is_unavailable(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(ProviderError) as raised:
+                self.provider().apply(action())
+        self.assertEqual(raised.exception.code, "secret_unavailable")
 
     def test_apply_rejects_branch_and_non_numeric_repository_identity(self):
         for changed in ({**AGENT, "sourceCommitSha": "main"}, {**AGENT, "sourceRepositoryId": "123"}):
@@ -130,6 +177,12 @@ class ProviderTests(unittest.TestCase):
         observed = self.provider(client).observe(connector_binding)
         self.assertEqual(observed["status"], "healthy")
         self.assertEqual(observed["evidence"][1]["type"], "http_company_binding")
+
+    def test_status_checks_the_supplying_provider_boundary(self):
+        self.assertEqual(self.provider().status(), {"implementation_available": True, "configured": True, "connected": True, "healthy": True})
+        provider = VercelProvider({}, FakeClient())
+        provider.client.token = None
+        self.assertEqual(provider.status(), {"implementation_available": True, "configured": False, "connected": False, "healthy": False})
 
     @patch.dict(os.environ, {"EVE_RUNTIME_TOKEN": "runtime-secret"})
     def test_semantic_turn_requires_engine_binding_and_declared_identity(self):

@@ -12,7 +12,7 @@ import urllib.request
 
 PROTOCOL = "omniseed.provider.protocol/1.0"
 PROVIDER_ID = "vercel"
-VERSION = "0.2.0-alpha.0"
+VERSION = "0.2.0-alpha.1"
 FAMILIES = ["agents", "connectors"]
 METHODS = [
     "provider.initialize", "provider.status", "provider.validate", "provider.plan",
@@ -71,6 +71,30 @@ class NetworkClient:
                 "host": urllib.parse.urlparse(url).hostname
             }) from error
 
+    def text_request(self, url, authenticated=False, timeout=10, method="GET", body=None, token=None):
+        headers = {"Accept": "application/x-ndjson, text/event-stream, text/plain", "User-Agent": "omniseed-provider-vercel/0.2"}
+        credential = token or (self.token if authenticated else None)
+        if authenticated and not credential:
+            raise ProviderError("Credentials are unavailable", "not_configured")
+        if credential:
+            headers["Authorization"] = "Bearer " + credential
+        encoded = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            encoded = json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(url, headers=headers, data=encoded, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.status, response.read().decode("utf-8")
+        except urllib.error.HTTPError as error:
+            raise ProviderError("Remote endpoint returned an error", "remote_http_error", {
+                "status": error.code, "host": urllib.parse.urlparse(url).hostname
+            }) from error
+        except (urllib.error.URLError, TimeoutError) as error:
+            raise ProviderError("Remote endpoint is unreachable", "remote_unreachable", {
+                "host": urllib.parse.urlparse(url).hostname
+            }) from error
+
 
 class EveClient:
     """Authenticated Eve protocol client created only from persisted resource state."""
@@ -101,13 +125,20 @@ class EveClient:
         session_id = started.get("sessionId")
         if not started.get("ok") or not session_id:
             raise ProviderError("Eve did not start a session", "invalid_remote_response")
-        _, stream = self.network.request(
+        _, stream = self.network.text_request(
             f"{self.runtime_url}/eve/v1/session/{session_id}/stream",
             authenticated=True, token=self.token, timeout=self.timeout
         )
-        events = stream if isinstance(stream, list) else stream.get("events", [])
         answer, turn_id, completed = "", None, False
-        for event in events:
+        for line in stream.splitlines():
+            if not line.strip():
+                continue
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ProviderError("Eve returned an invalid session event", "invalid_remote_response") from error
             turn_id = event.get("turnId", turn_id)
             if event.get("type") == "message.appended":
                 answer += (event.get("data") or {}).get("messageDelta", "")
@@ -142,15 +173,63 @@ class VercelProvider:
             "operations": OPERATIONS, "methods": METHODS
         }
 
+    @staticmethod
+    def _repository(value):
+        repository = str(value or "")
+        repository = re.sub(r"^https://github\.com/", "", repository)
+        return re.sub(r"\.git$", "", repository)
+
+    @staticmethod
+    def _endpoint_path(value, default):
+        return urllib.parse.urlparse(value).path if value else default
+
     def _spec(self, action):
-        return ((action or {}).get("desired") or {}).get("spec") or {}
+        raw = ((action or {}).get("desired") or {}).get("spec") or {}
+        if raw.get("projectId"):
+            return dict(raw)
+        family = (action or {}).get("family")
+        if family == "agents":
+            runtime, implementation, bootstrap = raw.get("runtime") or {}, raw.get("implementation") or {}, raw.get("bootstrap") or {}
+            endpoints = runtime.get("expectedEndpoints") or {}
+            return {
+                "projectId": runtime.get("project"),
+                "sourceRepository": self._repository(implementation.get("repository")),
+                "sourceRepositoryId": implementation.get("repositoryId"),
+                "sourceCommitSha": implementation.get("revision"),
+                "expectedCompanyId": bootstrap.get("company"),
+                "expectedEnvironment": runtime.get("environment"),
+                "agentIdentity": raw.get("organisationalIdentity") or bootstrap.get("identity"),
+                "secretReferences": runtime.get("secretReferences") or [],
+                "observationCredentialReference": runtime.get("observationCredentialReference"),
+                "healthPath": self._endpoint_path(endpoints.get("health"), "/health"),
+                "infoPath": self._endpoint_path(endpoints.get("info"), "/info"),
+                "operationEndpoint": bootstrap.get("omniseedEndpoint"),
+                "operationCredentialReference": bootstrap.get("credentialReference"),
+                "target": runtime.get("target", "production"),
+                "timeoutSeconds": runtime.get("timeoutSeconds", 10),
+            }
+        if family == "connectors":
+            source, binding, endpoints = raw.get("source") or {}, raw.get("companyBinding") or {}, raw.get("expectedEndpoints") or {}
+            return {
+                "projectId": raw.get("project"),
+                "sourceRepository": self._repository(source.get("repository")),
+                "sourceRepositoryId": source.get("repositoryId"),
+                "sourceCommitSha": source.get("revision"),
+                "expectedCompanyId": binding.get("companyId"),
+                "expectedRepository": self._repository(binding.get("repository")),
+                "expectedEnvironment": raw.get("environment"),
+                "companyBindingPath": self._endpoint_path(endpoints.get("company"), "/api/company"),
+                "target": raw.get("target", "production"),
+                "timeoutSeconds": raw.get("timeoutSeconds", 10),
+            }
+        return dict(raw)
 
     def _issues(self, action):
         family, resource_id, spec = action.get("family"), action.get("resourceId"), self._spec(action)
         issues = []
         common = ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "expectedCompanyId", "expectedEnvironment"]
         family_fields = {
-            "agents": ["agentIdentity", "secretReferences", "healthPath", "infoPath"],
+            "agents": ["agentIdentity", "secretReferences", "observationCredentialReference", "healthPath", "infoPath", "operationEndpoint", "operationCredentialReference"],
             "connectors": ["expectedRepository"]
         }
         if family not in FAMILIES:
@@ -172,7 +251,14 @@ class VercelProvider:
 
     def status(self):
         configured = bool(self.client.token)
-        return {"implementation_available": True, "configured": configured, "connected": False, "healthy": False}
+        connected = healthy = False
+        if configured:
+            try:
+                self.client.request("https://api.vercel.com/v2/user", authenticated=True)
+                connected = healthy = True
+            except ProviderError:
+                pass
+        return {"implementation_available": True, "configured": configured, "connected": connected, "healthy": healthy}
 
     def validate(self, action):
         issues = self._issues(action)
@@ -183,7 +269,7 @@ class VercelProvider:
         return "?teamId=" + urllib.parse.quote(team, safe="") if team else ""
 
     def _project_endpoint(self, spec):
-        return "https://api.vercel.com/v11/projects/" + urllib.parse.quote(spec["projectId"], safe="") + self._team_query(spec)
+        return "https://api.vercel.com/v9/projects/" + urllib.parse.quote(spec["projectId"], safe="") + self._team_query(spec)
 
     def _project_state(self, spec):
         try:
@@ -196,6 +282,9 @@ class VercelProvider:
 
     def plan(self, action):
         validation, spec = self.validate(action), self._spec(action)
+        secret_references = spec.get("secretReferences") or []
+        if isinstance(secret_references, dict):
+            secret_references = list(secret_references)
         project_change = "unknown"
         if validation["valid"]:
             project_change, _ = self._project_state(spec)
@@ -205,7 +294,7 @@ class VercelProvider:
             "family": action.get("family"), "resourceId": action.get("resourceId"),
             "project": {"id": spec.get("projectId"), "change": project_change},
             "source": {"repository": spec.get("sourceRepository"), "repositoryId": spec.get("sourceRepositoryId"), "commitSha": spec.get("sourceCommitSha")},
-            "environmentBindings": sorted((spec.get("secretReferences") or {}).keys()),
+            "environmentBindings": sorted(secret_references),
             "deploymentImpact": {"target": spec.get("target", "production"), "environment": spec.get("expectedEnvironment")},
             "expectedEvidence": ["vercel_api_response"] + (["eve_agent_runtime_health"] if action.get("family") == "agents" else ["http_company_binding"])
         }
@@ -219,22 +308,64 @@ class VercelProvider:
         _, project = self.client.request(endpoint, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="POST", body=body)
         return "create", project
 
+    def _secret_value(self, reference):
+        aliases = self.configuration.get("secretReferenceEnvironment") or {}
+        environment_name = aliases.get(reference, reference)
+        value = os.environ.get(environment_name)
+        if not value:
+            raise ProviderError("A declared secret reference is unavailable", "secret_unavailable", {"reference": reference})
+        return value
+
+    def _environment_values(self, spec, family):
+        if family != "agents":
+            return []
+        secret_references = spec.get("secretReferences") or []
+        if isinstance(secret_references, dict):
+            secret_references = list(secret_references)
+        public = {
+            "OMNISEED_COMPANY_REF": spec["expectedCompanyId"],
+            "OMNISEED_AGENT_IDENTITY": spec["agentIdentity"],
+            "OMNISEED_ENVIRONMENT": spec["expectedEnvironment"],
+            "OMNISEED_SOURCE_REPOSITORY": spec["sourceRepository"],
+            "OMNISEED_SOURCE_COMMIT_SHA": spec["sourceCommitSha"],
+            "OMNISEED_OPERATION_ENDPOINT": spec["operationEndpoint"],
+            "OMNISEED_OPERATION_CREDENTIAL_ENV": spec["operationCredentialReference"],
+        }
+        values = [{"key": key, "value": value, "type": "plain", "target": [spec.get("target", "production")]} for key, value in sorted(public.items())]
+        values.extend({"key": reference, "value": self._secret_value(reference), "type": "sensitive", "target": [spec.get("target", "production")]} for reference in sorted(secret_references))
+        return values
+
+    def _upsert_environment(self, spec, family):
+        values = self._environment_values(spec, family)
+        if not values:
+            return
+        base = "https://api.vercel.com/v10/projects/" + urllib.parse.quote(spec["projectId"], safe="") + "/env"
+        query = self._team_query(spec)
+        _, response = self.client.request(base + query, authenticated=True, timeout=spec.get("timeoutSeconds", 10))
+        items = response if isinstance(response, list) else response.get("envs", [])
+        existing = {(item.get("key"), tuple(item.get("target") or [])): item for item in items}
+        for value in values:
+            current = existing.get((value["key"], tuple(value["target"])))
+            if current and current.get("id"):
+                endpoint = "https://api.vercel.com/v9/projects/" + urllib.parse.quote(spec["projectId"], safe="") + "/env/" + urllib.parse.quote(current["id"], safe="") + query
+                self.client.request(endpoint, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="PATCH", body=value)
+            else:
+                self.client.request(base + query, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="POST", body=value)
+
     def apply(self, action):
         validation = self.validate(action)
         if not validation["valid"]:
             raise ProviderError("Action is invalid", "invalid_action", {"issues": validation["issues"]})
         spec, family = self._spec(action), action["family"]
         project_change, _ = self._ensure_project(spec)
-        environment = [
-            {"key": name, "type": "secret", "value": reference, "target": [spec.get("target", "production")]}
-            for name, reference in sorted((spec.get("secretReferences") or {}).items())
-        ]
+        self._upsert_environment(spec, family)
         body = {
             "name": spec["projectId"], "project": spec["projectId"], "target": spec.get("target", "production"),
-            "gitSource": {"type": "github", "repoId": spec["sourceRepositoryId"], "ref": spec["sourceCommitSha"]},
-            "env": environment,
+            "gitSource": {"type": "github", "repoId": spec["sourceRepositoryId"], "ref": spec["sourceCommitSha"], "sha": spec["sourceCommitSha"]},
             "meta": {"omniseedFamily": family, "omniseedResourceId": action["resourceId"], "omniseedCompanyId": spec["expectedCompanyId"], "omniseedAgentIdentity": spec.get("agentIdentity"), "omniseedSourceRepository": spec["sourceRepository"], "omniseedSourceCommit": spec["sourceCommitSha"]}
         }
+        if family == "agents":
+            body["projectSettings"] = {"framework": "eve", "buildCommand": "npm run build:runtime", "outputDirectory": ".output", "nodeVersion": "24.x"}
         endpoint = "https://api.vercel.com/v13/deployments" + self._team_query(spec)
         _, deployment = self.client.request(endpoint, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="POST", body=body)
         deployment_id, host = deployment.get("id") or deployment.get("uid"), deployment.get("url")
@@ -264,12 +395,12 @@ class VercelProvider:
         source_matches = actual_commit == spec.get("sourceCommitSha") and str(actual_repository_id) == str(spec.get("sourceRepositoryId")) and (not actual_repository or actual_repository == spec.get("sourceRepository"))
         return deployment, {"sourceRepository": actual_repository, "sourceRepositoryId": actual_repository_id, "sourceCommitSha": actual_commit, "sourceMatches": source_matches}
 
-    def _runtime_token(self):
-        name = self.configuration.get("runtimeAuthTokenEnv")
+    def _runtime_token(self, spec):
+        name = spec.get("observationCredentialReference") or self.configuration.get("runtimeAuthTokenEnv")
         return os.environ.get(name) if name else None
 
     def _eve(self, spec):
-        return EveClient(self.client, spec["deploymentUrl"], self._runtime_token(), spec.get("timeoutSeconds", 10), spec.get("healthPath", "/health"), spec.get("infoPath", "/info"))
+        return EveClient(self.client, spec["deploymentUrl"], self._runtime_token(spec), spec.get("timeoutSeconds", 10), spec.get("healthPath", "/health"), spec.get("infoPath", "/info"))
 
     def observe(self, resource):
         attributes = resource.get("attributes") or {}
