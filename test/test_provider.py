@@ -205,6 +205,21 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(observed["status"], "healthy")
         self.assertEqual(observed["snapshot"]["desiredRevision"], "b" * 40)
 
+    def test_production_promotion_requires_persisted_ready_source_binding(self):
+        client = FakeClient()
+        connector = self.provider(client).apply(action("connectors"))
+        connector["attributes"]["spec"]["sourceRepository"] = "mikeajijola/omniseed-lily"
+        result = self.provider(client).invoke("interface.deployment.promote", {"resourceBinding": connector}, {"actorId": "operator"})
+        promotion = [request for request in client.requests if request["method"] == "POST" and "/promote/" in request["url"]]
+        self.assertEqual(len(promotion), 1)
+        self.assertEqual(result["status"], "promoted")
+        self.assertEqual(result["evidence"]["deploymentId"], connector["attributes"]["spec"]["deploymentId"])
+
+        connector["attributes"]["spec"]["sourceCommitSha"] = "c" * 40
+        with self.assertRaises(ProviderError) as raised:
+            self.provider(client).invoke("interface.deployment.promote", {"resourceBinding": connector}, {"actorId": "operator"})
+        self.assertEqual(raised.exception.code, "promotion_precondition_failed")
+
     def test_status_checks_the_supplying_provider_boundary(self):
         self.assertEqual(self.provider().status(), {"implementation_available": True, "configured": True, "connected": True, "healthy": True})
         provider = VercelProvider({}, FakeClient())

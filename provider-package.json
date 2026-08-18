@@ -4,7 +4,7 @@
   "version": "0.2.0-alpha.1",
   "engineCompatibility": "omniseed.provider.protocol/1.0",
   "primitiveFamilies": ["agents", "connectors"],
-  "operations": ["interface.deployment.observe", "interface.deployment.status", "interface.deployment.evidence", "agent.semantic_turn"],
+  "operations": ["interface.deployment.observe", "interface.deployment.status", "interface.deployment.evidence", "interface.deployment.promote", "agent.semantic_turn"],
   "configurationSchema": "./provider-configuration.schema.json",
   "observationTypes": ["vercel_deployment_state", "company_binding_state", "eve_agent_runtime_state"],
   "evidenceTypes": ["vercel_api_response", "http_company_binding", "eve_agent_runtime_health", "eve_agent_semantic_turn"],
