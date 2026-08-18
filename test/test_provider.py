@@ -102,6 +102,8 @@ class ProviderTests(unittest.TestCase):
         planned = self.provider().plan(agent)
         self.assertEqual(planned["project"]["id"], "lily-production")
         self.assertEqual(planned["source"], {"repository": "mikeajijola/omniseed-lily", "repositoryId": 123456, "commitSha": SHA})
+        applied = self.provider().apply(connector)
+        self.assertEqual(applied["attributes"]["spec"]["companyBindingUrl"], "https://omniseed-os.vercel.app/api/company")
 
     def test_plan_reports_create_or_reuse_exact_revision_bindings_and_evidence(self):
         reused = self.provider().plan(action())

@@ -222,6 +222,7 @@ class VercelProvider:
                 "stewardActorId": binding.get("stewardActorId"),
                 "readOnlyInspection": binding.get("readOnlyInspection") is True,
                 "expectedEnvironment": raw.get("environment"),
+                "companyBindingUrl": endpoints.get("company"),
                 "companyBindingPath": self._endpoint_path(endpoints.get("company"), "/api/company"),
                 "target": raw.get("target", "production"),
                 "timeoutSeconds": raw.get("timeoutSeconds", 10),
@@ -397,7 +398,7 @@ class VercelProvider:
         deployment_url = host if host.startswith("https://") else "https://" + host
         applied_spec = {**spec, "deploymentId": deployment_id, "deploymentUrl": deployment_url}
         if family == "connectors":
-            applied_spec["companyBindingUrl"] = deployment_url.rstrip("/") + spec.get("companyBindingPath", "/api/company")
+            applied_spec["companyBindingUrl"] = spec.get("companyBindingUrl") or deployment_url.rstrip("/") + spec.get("companyBindingPath", "/api/company")
         return {
             "providerResourceId": f"vercel://{spec['projectId']}/deployments/{deployment_id}", "status": "submitted",
             "attributes": {"family": family, "resourceId": action["resourceId"], "spec": applied_spec, "projectChange": project_change, "submittedAt": now()}
