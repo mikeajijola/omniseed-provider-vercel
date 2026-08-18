@@ -217,6 +217,10 @@ class VercelProvider:
                 "sourceCommitSha": source.get("revision"),
                 "expectedCompanyId": binding.get("companyId"),
                 "expectedRepository": self._repository(binding.get("repository")),
+                "desiredRevision": binding.get("desiredRevision"),
+                "companyDefinitionPath": binding.get("path", "omniform.yaml"),
+                "stewardActorId": binding.get("stewardActorId"),
+                "readOnlyInspection": binding.get("readOnlyInspection") is True,
                 "expectedEnvironment": raw.get("environment"),
                 "companyBindingPath": self._endpoint_path(endpoints.get("company"), "/api/company"),
                 "target": raw.get("target", "production"),
@@ -230,7 +234,7 @@ class VercelProvider:
         common = ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "expectedCompanyId", "expectedEnvironment"]
         family_fields = {
             "agents": ["agentIdentity", "secretReferences", "observationCredentialReference", "healthPath", "infoPath", "operationEndpoint", "operationCredentialReference"],
-            "connectors": ["expectedRepository"]
+            "connectors": ["expectedRepository", "desiredRevision", "companyDefinitionPath", "stewardActorId"]
         }
         if family not in FAMILIES:
             issues.append({"code": "unsupported_family", "message": "Only agents and connectors are supported"})
@@ -241,6 +245,8 @@ class VercelProvider:
                 issues.append({"code": "missing_field", "field": field, "message": field + " is required"})
         if spec.get("sourceCommitSha") and not re.fullmatch(r"[0-9a-f]{40}", str(spec["sourceCommitSha"])):
             issues.append({"code": "source_not_immutable", "field": "sourceCommitSha", "message": "sourceCommitSha must be a full 40-character commit SHA"})
+        if spec.get("desiredRevision") and not re.fullmatch(r"[0-9a-f]{40}", str(spec["desiredRevision"])):
+            issues.append({"code": "company_source_not_immutable", "field": "desiredRevision", "message": "desiredRevision must be a full 40-character commit SHA"})
         if spec.get("sourceRepositoryId") and (isinstance(spec["sourceRepositoryId"], bool) or not isinstance(spec["sourceRepositoryId"], int)):
             issues.append({"code": "invalid_repository_id", "field": "sourceRepositoryId", "message": "sourceRepositoryId must be the numeric Vercel Git integration ID"})
         if spec.get("expectedCompanyId") and self.company_id and spec["expectedCompanyId"] != self.company_id:
@@ -294,7 +300,7 @@ class VercelProvider:
             "family": action.get("family"), "resourceId": action.get("resourceId"),
             "project": {"id": spec.get("projectId"), "change": project_change},
             "source": {"repository": spec.get("sourceRepository"), "repositoryId": spec.get("sourceRepositoryId"), "commitSha": spec.get("sourceCommitSha")},
-            "environmentBindings": sorted(secret_references),
+            "environmentBindings": sorted(secret_references) if action.get("family") == "agents" else sorted(item["key"] for item in self._environment_values(spec, "connectors")),
             "deploymentImpact": {"target": spec.get("target", "production"), "environment": spec.get("expectedEnvironment")},
             "expectedEvidence": ["vercel_api_response"] + (["eve_agent_runtime_health"] if action.get("family") == "agents" else ["http_company_binding"])
         }
@@ -317,6 +323,19 @@ class VercelProvider:
         return value
 
     def _environment_values(self, spec, family):
+        if family == "connectors":
+            repository = spec["expectedRepository"]
+            revision = spec["desiredRevision"]
+            path = str(spec.get("companyDefinitionPath") or "omniform.yaml").lstrip("/")
+            definition_url = f"https://raw.githubusercontent.com/{repository}/{revision}/{urllib.parse.quote(path, safe='/')}"
+            public = {
+                "OMNISEED_COMPANY_DEFINITION_URL": definition_url,
+                "OMNISEED_DESIRED_REVISION": revision,
+                "OMNISEED_ENVIRONMENT": spec["expectedEnvironment"],
+                "OMNISEED_STEWARD_ACTOR_ID": spec["stewardActorId"],
+                "OMNISEED_READ_ONLY_INSPECTION": "true" if spec.get("readOnlyInspection") else "false",
+            }
+            return [{"key": key, "value": value, "type": "plain", "target": [spec.get("target", "production")]} for key, value in sorted(public.items())]
         if family != "agents":
             return []
         secret_references = spec.get("secretReferences") or []
@@ -422,13 +441,17 @@ class VercelProvider:
             evidence.append({"type": "eve_agent_runtime_health", "source": PROVIDER_ID, "product": "eve", "deploymentId": spec["deploymentId"], "health": health, "runtime": info, "matchesDesired": runtime_matches, "observedAt": checked_at})
         elif family == "connectors":
             _, binding = self.client.json_request(spec["companyBindingUrl"], timeout=spec.get("timeoutSeconds", 10))
-            actual_company = binding.get("companyId") or (binding.get("company") or {}).get("id")
-            repository = binding.get("canonicalRepository") or binding.get("repository") or (binding.get("company") or {}).get("repository")
-            environment = binding.get("environment")
-            binding_matches = actual_company == spec["expectedCompanyId"] and repository == spec["expectedRepository"] and environment == spec["expectedEnvironment"]
+            instance = binding.get("instance") or {}
+            actual_company = binding.get("companyId") or (binding.get("company") or {}).get("id") or instance.get("companyId")
+            repository = binding.get("canonicalRepository") or binding.get("repository") or (binding.get("company") or {}).get("repository") or (instance.get("desiredState") or {}).get("repository")
+            repository = self._repository(repository)
+            environment = binding.get("environment") or instance.get("environment")
+            desired_revision = binding.get("desiredRevision") or instance.get("desiredRevision")
+            expected_environment = f"{spec['expectedEnvironment']}-read-only-inspection" if spec.get("readOnlyInspection") else spec["expectedEnvironment"]
+            binding_matches = actual_company == spec["expectedCompanyId"] and repository == spec["expectedRepository"] and environment == expected_environment and desired_revision == spec.get("desiredRevision")
             healthy = deployment_ok and binding_matches
-            snapshot.update({"companyId": actual_company, "canonicalRepository": repository, "environment": environment, "companyBindingMatches": binding_matches})
-            evidence.append({"type": "http_company_binding", "source": PROVIDER_ID, "url": spec["companyBindingUrl"], "companyId": actual_company, "canonicalRepository": repository, "environment": environment, "matchesDesired": binding_matches, "observedAt": checked_at})
+            snapshot.update({"companyId": actual_company, "canonicalRepository": repository, "desiredRevision": desired_revision, "environment": environment, "companyBindingMatches": binding_matches})
+            evidence.append({"type": "http_company_binding", "source": PROVIDER_ID, "url": spec["companyBindingUrl"], "companyId": actual_company, "canonicalRepository": repository, "desiredRevision": desired_revision, "environment": environment, "matchesDesired": binding_matches, "observedAt": checked_at})
         else:
             raise ProviderError("Persisted resource family is unsupported", "unsupported_family", {"family": family})
         return {"status": "healthy" if healthy else "degraded", "checkedAt": checked_at, "providerResourceId": f"vercel://{spec['projectId']}/deployments/{spec['deploymentId']}", "evidence": evidence, "snapshot": snapshot}

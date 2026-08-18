@@ -11,7 +11,7 @@ from provider.vercel_provider import PROTOCOL, ProviderError, VercelProvider
 SHA = "a" * 40
 BASE = {"projectId": "lily-production", "sourceRepository": "mikeajijola/omniseed-lily", "sourceRepositoryId": 123456, "sourceCommitSha": SHA, "expectedCompanyId": "omniseed_ecosystem", "expectedEnvironment": "production", "target": "production"}
 AGENT = {**BASE, "agentIdentity": "lily", "secretReferences": ["OMNISEED_OPERATION_TOKEN", "EVE_MODEL_TOKEN"], "observationCredentialReference": "EVE_MODEL_TOKEN", "healthPath": "/eve/v1/health", "infoPath": "/eve/v1/info", "operationEndpoint": "https://omniseed-os.vercel.app", "operationCredentialReference": "OMNISEED_OPERATION_TOKEN"}
-CONNECTOR = {**BASE, "sourceRepository": "mikeajijola/omniseedos", "expectedRepository": "mikeajijola/omniseed-ecosystem-company"}
+CONNECTOR = {**BASE, "sourceRepository": "mikeajijola/omniseedos", "expectedRepository": "mikeajijola/omniseed-ecosystem-company", "desiredRevision": "b" * 40, "companyDefinitionPath": "omniform.yaml", "stewardActorId": "lily", "readOnlyInspection": True}
 CANONICAL_AGENT = {
     "kind": "ai_agent", "organisationalIdentity": "lily",
     "bootstrap": {"company": "omniseed_ecosystem", "identity": "lily", "omniseedEndpoint": "https://omniseed-os.vercel.app", "credentialReference": "OMNISEED_OPERATION_TOKEN"},
@@ -21,7 +21,7 @@ CANONICAL_AGENT = {
 CANONICAL_CONNECTOR = {
     "project": "omniseed-os", "environment": "production", "provider": "vercel",
     "source": {"repository": "https://github.com/mikeajijola/omniseedos.git", "repositoryId": 987654, "revision": SHA},
-    "companyBinding": {"companyId": "omniseed_ecosystem", "repository": "https://github.com/mikeajijola/omniseed-ecosystem-company.git"},
+    "companyBinding": {"companyId": "omniseed_ecosystem", "repository": "https://github.com/mikeajijola/omniseed-ecosystem-company.git", "desiredRevision": "b" * 40, "path": "omniform.yaml", "stewardActorId": "lily", "readOnlyInspection": True},
     "expectedEndpoints": {"company": "https://omniseed-os.vercel.app/api/company"}
 }
 
@@ -60,7 +60,7 @@ class FakeClient:
         if url.endswith("/info"): return 200, self.runtime
         if url.endswith("/eve/v1/session") and method == "POST": return 200, {"ok": True, "sessionId": "ses_1"}
         if url.endswith("/stream"): return 200, {"events": [{"type": "message.appended", "turnId": "turn_1", "data": {"messageDelta": "hello"}}, {"type": "message.completed", "turnId": "turn_1"}]}
-        if url.endswith("/api/company"): return 200, {"companyId": "omniseed_ecosystem", "canonicalRepository": "mikeajijola/omniseed-ecosystem-company", "environment": "production"}
+        if url.endswith("/api/company"): return 200, {"company": {"id": "omniseed_ecosystem"}, "instance": {"desiredState": {"repository": "https://github.com/mikeajijola/omniseed-ecosystem-company.git"}, "desiredRevision": "b" * 40, "environment": "production-read-only-inspection"}}
         return 200, {}
 
     def json_request(self, url, authenticated=False, timeout=10, token=None):
@@ -177,6 +177,31 @@ class ProviderTests(unittest.TestCase):
         observed = self.provider(client).observe(connector_binding)
         self.assertEqual(observed["status"], "healthy")
         self.assertEqual(observed["evidence"][1]["type"], "http_company_binding")
+
+    def test_connector_apply_provisions_safe_immutable_company_binding_environment(self):
+        client = FakeClient()
+        self.provider(client).apply(action("connectors"))
+        values = {request["body"]["key"]: request["body"] for request in client.requests if "/env" in request["url"] and request["method"] in {"POST", "PATCH"}}
+        self.assertEqual(values["OMNISEED_DESIRED_REVISION"]["value"], "b" * 40)
+        self.assertEqual(values["OMNISEED_COMPANY_DEFINITION_URL"]["value"], f"https://raw.githubusercontent.com/mikeajijola/omniseed-ecosystem-company/{'b' * 40}/omniform.yaml")
+        self.assertEqual(values["OMNISEED_STEWARD_ACTOR_ID"]["value"], "lily")
+        self.assertEqual(values["OMNISEED_READ_ONLY_INSPECTION"]["value"], "true")
+        self.assertTrue(all(value["type"] == "plain" for value in values.values()))
+
+    def test_connector_observation_reads_engine_instance_projection(self):
+        client = FakeClient()
+        original = client.request
+        def projected(url, *args, **kwargs):
+            if url.endswith("/api/company"):
+                return 200, {"company": {"id": "omniseed_ecosystem"}, "instance": {"desiredState": {"repository": "https://github.com/mikeajijola/omniseed-ecosystem-company.git"}, "desiredRevision": "b" * 40, "environment": "production-read-only-inspection"}}
+            return original(url, *args, **kwargs)
+        client.request = projected
+        connector = binding(CONNECTOR, "connectors")
+        connector["attributes"]["spec"]["sourceRepositoryId"] = 123456
+        connector["attributes"]["spec"]["sourceRepository"] = "mikeajijola/omniseed-lily"
+        observed = self.provider(client).observe(connector)
+        self.assertEqual(observed["status"], "healthy")
+        self.assertEqual(observed["snapshot"]["desiredRevision"], "b" * 40)
 
     def test_status_checks_the_supplying_provider_boundary(self):
         self.assertEqual(self.provider().status(), {"implementation_available": True, "configured": True, "connected": True, "healthy": True})
