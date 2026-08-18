@@ -488,7 +488,11 @@ class VercelProvider:
             state = deployment.get("readyState") or deployment.get("state")
             if spec.get("target") != "production" or state != "READY" or not source["sourceMatches"]:
                 raise ProviderError("Only the ready deployment matching approved source may be promoted", "promotion_precondition_failed", {"state": state, "sourceMatches": source["sourceMatches"]})
-            path = "/v10/projects/" + urllib.parse.quote(spec["projectId"], safe="") + "/promote/" + urllib.parse.quote(spec["deploymentId"], safe="")
+            _, project = self._project_state(spec)
+            project_id = (project or {}).get("id")
+            if not project_id:
+                raise ProviderError("Vercel project identity is unavailable", "promotion_precondition_failed")
+            path = "/v10/projects/" + urllib.parse.quote(project_id, safe="") + "/promote/" + urllib.parse.quote(spec["deploymentId"], safe="")
             self.client.request("https://api.vercel.com" + path + self._team_query(spec), authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="POST", body={})
             promoted_at = now()
             return {"status": "promoted", "providerResourceId": f"vercel://{spec['projectId']}/deployments/{spec['deploymentId']}", "evidence": {"type": "vercel_api_response", "source": PROVIDER_ID, "action": "production_promotion", "projectId": spec["projectId"], "deploymentId": spec["deploymentId"], "sourceCommitSha": spec["sourceCommitSha"], "requestedBy": (actor or {}).get("actorId"), "observedAt": promoted_at}}
