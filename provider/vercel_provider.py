@@ -20,7 +20,7 @@ METHODS = [
 ]
 OPERATIONS = [
     "interface.deployment.observe", "interface.deployment.status",
-    "interface.deployment.evidence", "agent.semantic_turn"
+    "interface.deployment.evidence", "interface.deployment.promote", "agent.semantic_turn"
 ]
 
 
@@ -478,6 +478,20 @@ class VercelProvider:
                 raise ProviderError("A non-empty message is required", "invalid_input")
             result = self._eve(spec).turn(message)
             return {**result, "evidence": {"type": "eve_agent_semantic_turn", "source": PROVIDER_ID, "product": "eve", "deploymentId": spec["deploymentId"], "sessionId": result["sessionId"], "turnId": result["turnId"], "observedAt": now()}}
+        if operation == "interface.deployment.promote":
+            binding = (input_value or {}).get("resourceBinding")
+            attributes = (binding or {}).get("attributes") or {}
+            if attributes.get("family") != "connectors":
+                raise ProviderError("Production promotion requires a persisted connector binding", "resource_binding_required")
+            spec = attributes.get("spec") or {}
+            deployment, source = self._deployment_snapshot(spec)
+            state = deployment.get("readyState") or deployment.get("state")
+            if spec.get("target") != "production" or state != "READY" or not source["sourceMatches"]:
+                raise ProviderError("Only the ready deployment matching approved source may be promoted", "promotion_precondition_failed", {"state": state, "sourceMatches": source["sourceMatches"]})
+            path = "/v10/projects/" + urllib.parse.quote(spec["projectId"], safe="") + "/promote/" + urllib.parse.quote(spec["deploymentId"], safe="")
+            self.client.request("https://api.vercel.com" + path + self._team_query(spec), authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="POST", body={})
+            promoted_at = now()
+            return {"status": "promoted", "providerResourceId": f"vercel://{spec['projectId']}/deployments/{spec['deploymentId']}", "evidence": {"type": "vercel_api_response", "source": PROVIDER_ID, "action": "production_promotion", "projectId": spec["projectId"], "deploymentId": spec["deploymentId"], "sourceCommitSha": spec["sourceCommitSha"], "requestedBy": (actor or {}).get("actorId"), "observedAt": promoted_at}}
         binding = (input_value or {}).get("resourceBinding") or {"spec": input_value or {}}
         observed = self.observe(binding)
         if operation == "interface.deployment.status":
