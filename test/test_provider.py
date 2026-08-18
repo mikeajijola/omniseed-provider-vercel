@@ -37,6 +37,8 @@ class FakeClient:
         self.runtime = runtime or {"companyRef": "omniseed_ecosystem", "agentIdentity": "lily", "environment": "production", "source": {"repository": "mikeajijola/omniseed-lily", "commitSha": SHA}, "agent": {"framework": "eve"}}
         self.requests = []
         self.existing_env = existing_env or []
+        self.states = list(state) if isinstance(state, (list, tuple)) else None
+        self.deployment_source = None
 
     def request(self, url, authenticated=False, timeout=10, method="GET", body=None, token=None):
         self.requests.append({"url": url, "authenticated": authenticated, "method": method, "body": body, "token": token})
@@ -52,9 +54,17 @@ class FakeClient:
         if url.endswith("/v11/projects") and method == "POST": return 200, {"id": "prj_created"}
         if "/v13/deployments" in url and method == "POST":
             if self.fail_deploy: raise ProviderError("api failed", "remote_http_error", {"status": 500})
+            self.deployment_source = {
+                "repo": body["meta"]["omniseedSourceRepository"].split("/", 1)[1],
+                "repoId": body["gitSource"]["repoId"],
+                "ref": body["gitSource"]["ref"],
+                "repository": body["meta"]["omniseedSourceRepository"],
+            }
             return 200, {"id": "dpl_1", "url": "lily.example.test"}
         if "/v13/deployments/" in url:
-            return 200, {"id": "dpl_1", "readyState": self.state, "gitSource": {"repo": "omniseed-lily", "repoId": 123456, "ref": self.commit}, "meta": {"omniseedSourceRepository": "mikeajijola/omniseed-lily"}}
+            state = self.states.pop(0) if self.states else self.state
+            source = self.deployment_source or {"repo": "omniseed-lily", "repoId": 123456, "ref": self.commit, "repository": "mikeajijola/omniseed-lily"}
+            return 200, {"id": "dpl_1", "readyState": state, "gitSource": {"repo": source["repo"], "repoId": source["repoId"], "ref": source["ref"]}, "meta": {"omniseedSourceRepository": source["repository"]}}
         if url.endswith("/health"): return 200, {"ok": self.state == "READY"}
         if url.endswith("/info"): return 200, self.runtime
         if url.endswith("/eve/v1/session") and method == "POST": return 200, {"ok": True, "sessionId": "ses_1"}
@@ -142,6 +152,15 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(any(r["method"] == "PATCH" and "/env/env_1" in r["url"] for r in client.requests))
         with self.assertRaises(ProviderError): self.provider(FakeClient(fail_deploy=True)).apply(action())
 
+    @patch.dict(os.environ, {"OMNISEED_OPERATION_TOKEN": "operation-secret", "EVE_MODEL_TOKEN": "model-secret", "LILY_SESSION_JWT_SECRET": "session-secret"})
+    def test_apply_waits_for_immutable_deployment_readiness_and_fails_closed(self):
+        desired = {**AGENT, "pollIntervalSeconds": 0.001, "deploymentTimeoutSeconds": 1}
+        ready = self.provider(FakeClient(state=["BUILDING", "READY"])).apply(action(spec=desired))
+        self.assertEqual(ready["status"], "submitted")
+        with self.assertRaises(ProviderError) as failed:
+            self.provider(FakeClient(state="ERROR")).apply(action(spec=desired))
+        self.assertEqual(failed.exception.code, "deployment_failed")
+
     def test_apply_fails_closed_when_a_declared_secret_reference_is_unavailable(self):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(ProviderError) as raised:
@@ -177,8 +196,6 @@ class ProviderTests(unittest.TestCase):
         deployment = [request for request in client.requests if request["method"] == "POST" and "/v13/deployments" in request["url"]][0]
         self.assertTrue(all(isinstance(value, str) for value in deployment["body"]["meta"].values()))
         connector_binding = applied
-        # The fake deployment source defaults to Lily; use metadata-free equality by adapting expected repo.
-        connector_binding["attributes"]["spec"]["sourceRepository"] = "mikeajijola/omniseed-lily"
         observed = self.provider(client).observe(connector_binding)
         self.assertEqual(observed["status"], "healthy")
         self.assertEqual(observed["evidence"][1]["type"], "http_company_binding")
@@ -235,7 +252,6 @@ class ProviderTests(unittest.TestCase):
     def test_production_promotion_requires_persisted_ready_source_binding(self):
         client = FakeClient()
         connector = self.provider(client).apply(action("connectors"))
-        connector["attributes"]["spec"]["sourceRepository"] = "mikeajijola/omniseed-lily"
         result = self.provider(client).invoke("interface.deployment.promote", {"resourceBinding": connector}, {"actorId": "operator"})
         promotion = [request for request in client.requests if request["method"] == "POST" and "/promote/" in request["url"]]
         self.assertEqual(len(promotion), 1)
