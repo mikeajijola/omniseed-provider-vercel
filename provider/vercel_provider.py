@@ -12,7 +12,7 @@ import urllib.request
 
 PROTOCOL = "omniseed.provider.protocol/1.0"
 PROVIDER_ID = "vercel"
-VERSION = "0.2.0-alpha.1"
+VERSION = "0.2.0-alpha.3"
 FAMILIES = ["agents", "connectors"]
 METHODS = [
     "provider.initialize", "provider.status", "provider.validate", "provider.plan",
@@ -191,6 +191,7 @@ class VercelProvider:
         if family == "agents":
             runtime, implementation, bootstrap = raw.get("runtime") or {}, raw.get("implementation") or {}, raw.get("bootstrap") or {}
             endpoints = runtime.get("expectedEndpoints") or {}
+            session = runtime.get("session") or {}
             return {
                 "projectId": runtime.get("project"),
                 "sourceRepository": self._repository(implementation.get("repository")),
@@ -205,11 +206,15 @@ class VercelProvider:
                 "infoPath": self._endpoint_path(endpoints.get("info"), "/info"),
                 "operationEndpoint": bootstrap.get("omniseedEndpoint"),
                 "operationCredentialReference": bootstrap.get("credentialReference"),
+                "sessionCredentialReference": session.get("credentialReference"),
+                "sessionIssuer": session.get("issuer", "omniseed"),
+                "sessionAudience": session.get("audience", "omniseed-lily"),
                 "target": runtime.get("target", "production"),
                 "timeoutSeconds": runtime.get("timeoutSeconds", 10),
             }
         if family == "connectors":
-            source, binding, endpoints = raw.get("source") or {}, raw.get("companyBinding") or {}, raw.get("expectedEndpoints") or {}
+            source, binding, endpoints, durable = raw.get("source") or {}, raw.get("companyBinding") or {}, raw.get("expectedEndpoints") or {}, raw.get("durableState") or {}
+            secret_references = list(dict.fromkeys([*(durable.get("credentialReferences") or []), *(raw.get("secretReferences") or [])]))
             return {
                 "projectId": raw.get("project"),
                 "sourceRepository": self._repository(source.get("repository")),
@@ -217,11 +222,13 @@ class VercelProvider:
                 "sourceCommitSha": source.get("revision"),
                 "expectedCompanyId": binding.get("companyId"),
                 "expectedRepository": self._repository(binding.get("repository")),
-                "desiredRevision": binding.get("desiredRevision"),
+                "desiredRevision": self.configuration.get("desiredRevision") or binding.get("desiredRevision"),
                 "companyDefinitionPath": binding.get("path", "omniform.yaml"),
                 "stewardActorId": binding.get("stewardActorId"),
                 "readOnlyInspection": binding.get("readOnlyInspection") is True,
                 "expectedEnvironment": raw.get("environment"),
+                "stateEndpoint": durable.get("endpoint"),
+                "secretReferences": secret_references,
                 "companyBindingUrl": endpoints.get("company"),
                 "companyBindingPath": self._endpoint_path(endpoints.get("company"), "/api/company"),
                 "target": raw.get("target", "production"),
@@ -234,9 +241,11 @@ class VercelProvider:
         issues = []
         common = ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "expectedCompanyId", "expectedEnvironment"]
         family_fields = {
-            "agents": ["agentIdentity", "secretReferences", "observationCredentialReference", "healthPath", "infoPath", "operationEndpoint", "operationCredentialReference"],
+            "agents": ["agentIdentity", "secretReferences", "observationCredentialReference", "healthPath", "infoPath", "operationEndpoint", "operationCredentialReference", "sessionCredentialReference", "sessionIssuer", "sessionAudience"],
             "connectors": ["expectedRepository", "desiredRevision", "companyDefinitionPath", "stewardActorId"]
         }
+        if family == "connectors" and not spec.get("readOnlyInspection"):
+            family_fields["connectors"].extend(["stateEndpoint", "secretReferences"])
         if family not in FAMILIES:
             issues.append({"code": "unsupported_family", "message": "Only agents and connectors are supported"})
         if not resource_id:
@@ -254,6 +263,8 @@ class VercelProvider:
             issues.append({"code": "company_boundary", "message": "Action company does not match Provider context"})
         if family == "agents" and "runtimeUrl" in spec:
             issues.append({"code": "caller_runtime_forbidden", "field": "runtimeUrl", "message": "Runtime URL must come from Vercel deployment state"})
+        if family == "agents" and spec.get("sessionCredentialReference") not in (spec.get("secretReferences") or []):
+            issues.append({"code": "missing_secret_reference", "field": "sessionCredentialReference", "message": "The Eve session credential must be included in secretReferences"})
         return issues
 
     def status(self):
@@ -333,10 +344,13 @@ class VercelProvider:
                 "OMNISEED_COMPANY_DEFINITION_URL": definition_url,
                 "OMNISEED_DESIRED_REVISION": revision,
                 "OMNISEED_ENVIRONMENT": spec["expectedEnvironment"],
+                "OMNISEED_STATE_ENDPOINT": spec.get("stateEndpoint"),
                 "OMNISEED_STEWARD_ACTOR_ID": spec["stewardActorId"],
                 "OMNISEED_READ_ONLY_INSPECTION": "true" if spec.get("readOnlyInspection") else "false",
             }
-            return [{"key": key, "value": value, "type": "encrypted", "target": [spec.get("target", "production")]} for key, value in sorted(public.items())]
+            values = [{"key": key, "value": value, "type": "encrypted", "target": [spec.get("target", "production")]} for key, value in sorted(public.items()) if value is not None]
+            values.extend({"key": reference, "value": self._secret_value(reference), "type": "sensitive", "target": [spec.get("target", "production")]} for reference in sorted(spec.get("secretReferences") or []))
+            return values
         if family != "agents":
             return []
         secret_references = spec.get("secretReferences") or []
@@ -350,6 +364,9 @@ class VercelProvider:
             "OMNISEED_SOURCE_COMMIT_SHA": spec["sourceCommitSha"],
             "OMNISEED_OPERATION_ENDPOINT": spec["operationEndpoint"],
             "OMNISEED_OPERATION_CREDENTIAL_ENV": spec["operationCredentialReference"],
+            "OMNISEED_SESSION_CREDENTIAL_ENV": spec["sessionCredentialReference"],
+            "OMNISEED_SESSION_JWT_ISSUER": spec["sessionIssuer"],
+            "OMNISEED_SESSION_JWT_AUDIENCE": spec["sessionAudience"],
         }
         values = [{"key": key, "value": value, "type": "encrypted", "target": [spec.get("target", "production")]} for key, value in sorted(public.items())]
         values.extend({"key": reference, "value": self._secret_value(reference), "type": "sensitive", "target": [spec.get("target", "production")]} for reference in sorted(secret_references))

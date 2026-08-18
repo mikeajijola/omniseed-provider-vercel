@@ -10,13 +10,13 @@ from provider.vercel_provider import PROTOCOL, ProviderError, VercelProvider
 
 SHA = "a" * 40
 BASE = {"projectId": "lily-production", "sourceRepository": "mikeajijola/omniseed-lily", "sourceRepositoryId": 123456, "sourceCommitSha": SHA, "expectedCompanyId": "omniseed_ecosystem", "expectedEnvironment": "production", "target": "production"}
-AGENT = {**BASE, "agentIdentity": "lily", "secretReferences": ["OMNISEED_OPERATION_TOKEN", "EVE_MODEL_TOKEN"], "observationCredentialReference": "EVE_MODEL_TOKEN", "healthPath": "/eve/v1/health", "infoPath": "/eve/v1/info", "operationEndpoint": "https://omniseed-os.vercel.app", "operationCredentialReference": "OMNISEED_OPERATION_TOKEN"}
+AGENT = {**BASE, "agentIdentity": "lily", "secretReferences": ["OMNISEED_OPERATION_TOKEN", "EVE_MODEL_TOKEN", "LILY_SESSION_JWT_SECRET"], "observationCredentialReference": "EVE_MODEL_TOKEN", "healthPath": "/eve/v1/health", "infoPath": "/eve/v1/info", "operationEndpoint": "https://omniseed-os.vercel.app", "operationCredentialReference": "OMNISEED_OPERATION_TOKEN", "sessionCredentialReference": "LILY_SESSION_JWT_SECRET", "sessionIssuer": "omniseed", "sessionAudience": "omniseed-lily"}
 CONNECTOR = {**BASE, "sourceRepository": "mikeajijola/omniseedos", "expectedRepository": "mikeajijola/omniseed-ecosystem-company", "desiredRevision": "b" * 40, "companyDefinitionPath": "omniform.yaml", "stewardActorId": "lily", "readOnlyInspection": True}
 CANONICAL_AGENT = {
     "kind": "ai_agent", "organisationalIdentity": "lily",
     "bootstrap": {"company": "omniseed_ecosystem", "identity": "lily", "omniseedEndpoint": "https://omniseed-os.vercel.app", "credentialReference": "OMNISEED_OPERATION_TOKEN"},
     "implementation": {"framework": "eve", "repository": "https://github.com/mikeajijola/omniseed-lily.git", "repositoryId": 123456, "revision": SHA},
-    "runtime": {"project": "lily-production", "environment": "production", "provider": "vercel", "secretReferences": ["OMNISEED_OPERATION_TOKEN", "LILY_RUNTIME_OBSERVATION_TOKEN"], "observationCredentialReference": "LILY_RUNTIME_OBSERVATION_TOKEN", "expectedEndpoints": {"health": "https://omniseed-lily.vercel.app/health", "info": "https://omniseed-lily.vercel.app/info"}}
+    "runtime": {"project": "lily-production", "environment": "production", "provider": "vercel", "secretReferences": ["OMNISEED_OPERATION_TOKEN", "LILY_RUNTIME_OBSERVATION_TOKEN", "LILY_SESSION_JWT_SECRET"], "observationCredentialReference": "LILY_RUNTIME_OBSERVATION_TOKEN", "session": {"credentialReference": "LILY_SESSION_JWT_SECRET", "issuer": "omniseed", "audience": "omniseed-lily"}, "expectedEndpoints": {"health": "https://omniseed-lily.vercel.app/health", "info": "https://omniseed-lily.vercel.app/info", "operation": "https://omniseed-lily.vercel.app/eve/v1/session"}}
 }
 CANONICAL_CONNECTOR = {
     "project": "omniseed-os", "environment": "production", "provider": "vercel",
@@ -111,10 +111,10 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(reused["project"]["change"], "reuse")
         self.assertEqual(created["project"]["change"], "create")
         self.assertEqual(reused["source"]["commitSha"], SHA)
-        self.assertEqual(reused["environmentBindings"], ["EVE_MODEL_TOKEN", "OMNISEED_OPERATION_TOKEN"])
+        self.assertEqual(reused["environmentBindings"], ["EVE_MODEL_TOKEN", "LILY_SESSION_JWT_SECRET", "OMNISEED_OPERATION_TOKEN"])
         self.assertIn("eve_agent_runtime_health", reused["expectedEvidence"])
 
-    @patch.dict(os.environ, {"OMNISEED_OPERATION_TOKEN": "operation-secret", "EVE_MODEL_TOKEN": "model-secret"})
+    @patch.dict(os.environ, {"OMNISEED_OPERATION_TOKEN": "operation-secret", "EVE_MODEL_TOKEN": "model-secret", "LILY_SESSION_JWT_SECRET": "session-secret"})
     def test_apply_creates_project_configures_environment_and_deploys_exact_sha_without_evidence_leak(self):
         client = FakeClient(project_exists=False)
         result = self.provider(client).apply(action())
@@ -127,12 +127,14 @@ class ProviderTests(unittest.TestCase):
         self.assertNotIn("model-secret", payload)
         environment_requests = [r for r in client.requests if "/env" in r["url"] and r["method"] in {"POST", "PATCH"}]
         self.assertTrue(any(r["body"].get("key") == "OMNISEED_OPERATION_TOKEN" and r["body"].get("type") == "sensitive" and r["body"].get("value") == "operation-secret" for r in environment_requests))
+        self.assertTrue(any(r["body"].get("key") == "LILY_SESSION_JWT_SECRET" and r["body"].get("type") == "sensitive" and r["body"].get("value") == "session-secret" for r in environment_requests))
+        self.assertTrue(any(r["body"].get("key") == "OMNISEED_SESSION_CREDENTIAL_ENV" and r["body"].get("value") == "LILY_SESSION_JWT_SECRET" for r in environment_requests))
         self.assertEqual(deployment["body"]["projectSettings"]["framework"], "eve")
         self.assertNotIn(FakeClient.token, payload)
         self.assertNotIn("actual-secret", payload)
         self.assertNotIn("operation-secret", json.dumps(result))
 
-    @patch.dict(os.environ, {"OMNISEED_OPERATION_TOKEN": "operation-secret", "EVE_MODEL_TOKEN": "model-secret"})
+    @patch.dict(os.environ, {"OMNISEED_OPERATION_TOKEN": "operation-secret", "EVE_MODEL_TOKEN": "model-secret", "LILY_SESSION_JWT_SECRET": "session-secret"})
     def test_apply_is_idempotent_for_existing_project_and_environment_and_propagates_api_failure(self):
         client = FakeClient(project_exists=True, existing_env=[{"id": "env_1", "key": "OMNISEED_OPERATION_TOKEN", "target": ["production", "preview"]}])
         self.provider(client).apply(action())
@@ -190,6 +192,30 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(values["OMNISEED_STEWARD_ACTOR_ID"]["value"], "lily")
         self.assertEqual(values["OMNISEED_READ_ONLY_INSPECTION"]["value"], "true")
         self.assertTrue(all(value["type"] == "encrypted" for value in values.values()))
+
+    @patch.dict(os.environ, {"DATABASE_URL": "database-secret", "OMNISEED_STATE_TOKEN": "state-secret", "OMNISEED_OPERATOR_TOKEN": "operator-secret", "OMNISEED_OPERATION_TOKEN": "operation-secret", "LILY_SESSION_JWT_SECRET": "session-secret"})
+    def test_production_connector_binds_durable_state_and_server_credentials_without_evidence_leak(self):
+        client = FakeClient()
+        production = {
+            **CONNECTOR,
+            "readOnlyInspection": False,
+            "stateEndpoint": "https://omniseed-os.vercel.app/api/state/companies/omniseed_ecosystem/state",
+            "secretReferences": ["DATABASE_URL", "OMNISEED_STATE_TOKEN", "OMNISEED_OPERATOR_TOKEN", "OMNISEED_OPERATION_TOKEN", "LILY_SESSION_JWT_SECRET"]
+        }
+        result = self.provider(client).apply(action("connectors", production))
+        values = {request["body"]["key"]: request["body"] for request in client.requests if "/env" in request["url"] and request["method"] in {"POST", "PATCH"}}
+        self.assertEqual(values["OMNISEED_STATE_ENDPOINT"]["value"], production["stateEndpoint"])
+        self.assertEqual(values["OMNISEED_READ_ONLY_INSPECTION"]["value"], "false")
+        for key in production["secretReferences"]:
+            self.assertEqual(values[key]["type"], "sensitive")
+        serialized = json.dumps(result)
+        for secret in ["database-secret", "state-secret", "operator-secret", "operation-secret", "session-secret"]:
+            self.assertNotIn(secret, serialized)
+
+    def test_connector_combines_durable_and_interface_secret_references(self):
+        desired = {**CANONICAL_CONNECTOR, "secretReferences": ["LILY_SESSION_JWT_SECRET"], "durableState": {"credentialReferences": ["DATABASE_URL", "OMNISEED_STATE_TOKEN"]}}
+        spec = self.provider()._spec(action("connectors", desired))
+        self.assertEqual(spec["secretReferences"], ["DATABASE_URL", "OMNISEED_STATE_TOKEN", "LILY_SESSION_JWT_SECRET"])
 
     def test_connector_observation_reads_engine_instance_projection(self):
         client = FakeClient()

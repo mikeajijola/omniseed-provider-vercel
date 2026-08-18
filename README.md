@@ -11,4 +11,11 @@ Provider configuration contains only organisation-wide Vercel team/authenticatio
 
 `observe` starts from the deployment binding persisted by OmniSeed and independently verifies Vercel deployment/source identity. Connector observations verify company binding. Agent observations use authenticated Eve health and info endpoints and verify company, Agent, environment, and Lily source identity. `agent.semantic_turn` likewise requires that persisted Engine resource binding; a browser or caller cannot choose a runtime URL.
 
+For a declared Eve Agent, `runtime.session` supplies the credential-reference
+name plus issuer and audience. The Provider binds those public settings and the
+referenced secret to the Agent deployment. A connector realising OmniSeed OS
+may declare the same secret reference so the OS can mint short-lived,
+company-scoped session tokens. The value remains ordinary per-environment
+configuration and never enters Omniform, a plan, runtime state, or evidence.
+
 Run one JSON-RPC 2.0 message per line with `python provider/vercel_provider.py`. Run tests with `npm test`.

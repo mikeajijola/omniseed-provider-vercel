@@ -1,9 +1,14 @@
 {
   "manifestVersion": "1.0",
   "id": "vercel",
-  "version": "0.2.0-alpha.1",
+  "organisation": "Vercel",
+  "version": "0.2.0-alpha.3",
   "engineCompatibility": "omniseed.provider.protocol/1.0",
   "primitiveFamilies": ["agents", "connectors"],
+  "implementations": [
+    { "family": "agents", "products": ["Eve", "Functions", "AI Gateway", "Deployment Services"] },
+    { "family": "connectors", "products": ["Functions", "Deployment Services"] }
+  ],
   "operations": ["interface.deployment.observe", "interface.deployment.status", "interface.deployment.evidence", "interface.deployment.promote", "agent.semantic_turn"],
   "configurationSchema": "./provider-configuration.schema.json",
   "observationTypes": ["vercel_deployment_state", "company_binding_state", "eve_agent_runtime_state"],
