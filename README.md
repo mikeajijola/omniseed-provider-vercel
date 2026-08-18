@@ -9,6 +9,13 @@ Provider configuration contains only organisation-wide Vercel team/authenticatio
 
 `plan` distinguishes project creation from reuse and reports the exact immutable revision, environment binding names, deployment impact, and expected evidence. `apply` uses Vercel `/v11/projects`, project environment endpoints, and `/v13/deployments`; it never invokes `eve deploy`, reads a local source tree, accepts a branch tip, or binds a pre-existing runtime URL. Declared secret references are resolved from the Provider process environment and written as sensitive project variables; values never enter Git, plans, runtime state, or evidence.
 
+`apply` returns a resource binding only after Vercel reports the deployment
+`READY` and the independently read deployment source still matches the approved
+repository identity and full commit SHA. Failed, cancelled, timed-out, or
+source-mismatched deployments fail closed. This makes reconciliation repeatable
+from the declaration while keeping deployment readiness distinct from later
+runtime observations.
+
 `observe` starts from the deployment binding persisted by OmniSeed and independently verifies Vercel deployment/source identity. Connector observations verify company binding. Agent observations use authenticated Eve health and info endpoints and verify company, Agent, environment, and Lily source identity. `agent.semantic_turn` likewise requires that persisted Engine resource binding; a browser or caller cannot choose a runtime URL.
 
 For a declared Eve Agent, `runtime.session` supplies the credential-reference

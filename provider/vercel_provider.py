@@ -6,13 +6,14 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 PROTOCOL = "omniseed.provider.protocol/1.0"
 PROVIDER_ID = "vercel"
-VERSION = "0.2.0-alpha.3"
+VERSION = "0.2.0-alpha.4"
 FAMILIES = ["agents", "connectors"]
 METHODS = [
     "provider.initialize", "provider.status", "provider.validate", "provider.plan",
@@ -211,6 +212,8 @@ class VercelProvider:
                 "sessionAudience": session.get("audience", "omniseed-lily"),
                 "target": runtime.get("target", "production"),
                 "timeoutSeconds": runtime.get("timeoutSeconds", 10),
+                "deploymentTimeoutSeconds": runtime.get("deploymentTimeoutSeconds", 300),
+                "pollIntervalSeconds": runtime.get("pollIntervalSeconds", 2),
             }
         if family == "connectors":
             source, binding, endpoints, durable = raw.get("source") or {}, raw.get("companyBinding") or {}, raw.get("expectedEndpoints") or {}, raw.get("durableState") or {}
@@ -233,6 +236,8 @@ class VercelProvider:
                 "companyBindingPath": self._endpoint_path(endpoints.get("company"), "/api/company"),
                 "target": raw.get("target", "production"),
                 "timeoutSeconds": raw.get("timeoutSeconds", 10),
+                "deploymentTimeoutSeconds": raw.get("deploymentTimeoutSeconds", 300),
+                "pollIntervalSeconds": raw.get("pollIntervalSeconds", 2),
             }
         return dict(raw)
 
@@ -414,6 +419,7 @@ class VercelProvider:
             raise ProviderError("Vercel did not return a deployment identity", "invalid_remote_response", {"host": "api.vercel.com"})
         deployment_url = host if host.startswith("https://") else "https://" + host
         applied_spec = {**spec, "deploymentId": deployment_id, "deploymentUrl": deployment_url}
+        self._wait_for_deployment(applied_spec)
         if family == "connectors":
             applied_spec["companyBindingUrl"] = spec.get("companyBindingUrl") or deployment_url.rstrip("/") + spec.get("companyBindingPath", "/api/company")
         return {
@@ -435,6 +441,21 @@ class VercelProvider:
         actual_repository = meta.get("omniseedSourceRepository") or git_source.get("repo") or meta.get("githubRepo") or meta.get("gitRepo")
         source_matches = actual_commit == spec.get("sourceCommitSha") and str(actual_repository_id) == str(spec.get("sourceRepositoryId")) and (not actual_repository or actual_repository == spec.get("sourceRepository"))
         return deployment, {"sourceRepository": actual_repository, "sourceRepositoryId": actual_repository_id, "sourceCommitSha": actual_commit, "sourceMatches": source_matches}
+
+    def _wait_for_deployment(self, spec):
+        deadline = time.monotonic() + max(1, int(spec.get("deploymentTimeoutSeconds", 300)))
+        while True:
+            deployment, source = self._deployment_snapshot(spec)
+            state = deployment.get("readyState") or deployment.get("state")
+            if state == "READY":
+                if not source["sourceMatches"]:
+                    raise ProviderError("Ready deployment does not match the approved immutable source", "deployment_source_mismatch")
+                return deployment
+            if state in {"ERROR", "CANCELED"}:
+                raise ProviderError("Vercel deployment did not become ready", "deployment_failed", {"state": state})
+            if time.monotonic() >= deadline:
+                raise ProviderError("Timed out waiting for Vercel deployment readiness", "deployment_timeout", {"state": state})
+            time.sleep(max(0.1, float(spec.get("pollIntervalSeconds", 2))))
 
     def _runtime_token(self, spec):
         name = spec.get("observationCredentialReference") or self.configuration.get("runtimeAuthTokenEnv")
