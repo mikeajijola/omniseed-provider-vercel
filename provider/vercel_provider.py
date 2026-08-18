@@ -414,7 +414,7 @@ class VercelProvider:
         meta, git_source = deployment.get("meta") or {}, deployment.get("gitSource") or {}
         actual_commit = git_source.get("ref") or meta.get("githubCommitSha") or meta.get("gitCommitSha")
         actual_repository_id = git_source.get("repoId") or meta.get("githubRepoId") or meta.get("gitRepoId")
-        actual_repository = git_source.get("repo") or meta.get("githubRepo") or meta.get("gitRepo")
+        actual_repository = meta.get("omniseedSourceRepository") or git_source.get("repo") or meta.get("githubRepo") or meta.get("gitRepo")
         source_matches = actual_commit == spec.get("sourceCommitSha") and str(actual_repository_id) == str(spec.get("sourceRepositoryId")) and (not actual_repository or actual_repository == spec.get("sourceRepository"))
         return deployment, {"sourceRepository": actual_repository, "sourceRepositoryId": actual_repository_id, "sourceCommitSha": actual_commit, "sourceMatches": source_matches}
 
