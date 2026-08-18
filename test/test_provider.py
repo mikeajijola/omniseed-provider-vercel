@@ -121,7 +121,14 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(reused["project"]["change"], "reuse")
         self.assertEqual(created["project"]["change"], "create")
         self.assertEqual(reused["source"]["commitSha"], SHA)
-        self.assertEqual(reused["environmentBindings"], ["EVE_MODEL_TOKEN", "LILY_SESSION_JWT_SECRET", "OMNISEED_OPERATION_TOKEN"])
+        self.assertEqual(reused["environmentBindings"], sorted([
+            "EVE_MODEL_TOKEN", "LILY_SESSION_JWT_SECRET", "OMNISEED_OPERATION_TOKEN",
+            "OMNISEED_AGENT_IDENTITY", "OMNISEED_COMPANY_REF", "OMNISEED_ENVIRONMENT",
+            "OMNISEED_OPERATION_CREDENTIAL_ENV", "OMNISEED_OPERATION_ENDPOINT",
+            "OMNISEED_SESSION_CREDENTIAL_ENV", "OMNISEED_SESSION_JWT_AUDIENCE",
+            "OMNISEED_SESSION_JWT_ISSUER", "OMNISEED_SOURCE_COMMIT_SHA",
+            "OMNISEED_SOURCE_REPOSITORY"
+        ]))
         self.assertIn("eve_agent_runtime_health", reused["expectedEvidence"])
 
     @patch.dict(os.environ, {"OMNISEED_OPERATION_TOKEN": "operation-secret", "EVE_MODEL_TOKEN": "model-secret", "LILY_SESSION_JWT_SECRET": "session-secret"})
@@ -149,8 +156,17 @@ class ProviderTests(unittest.TestCase):
         client = FakeClient(project_exists=True, existing_env=[{"id": "env_1", "key": "OMNISEED_OPERATION_TOKEN", "target": ["production", "preview"]}])
         self.provider(client).apply(action())
         self.assertFalse(any(r["method"] == "POST" and r["url"].endswith("/v11/projects") for r in client.requests))
-        self.assertTrue(any(r["method"] == "PATCH" and "/env/env_1" in r["url"] for r in client.requests))
+        self.assertFalse(any(r["method"] == "PATCH" and "/env/env_1" in r["url"] for r in client.requests))
         with self.assertRaises(ProviderError): self.provider(FakeClient(fail_deploy=True)).apply(action())
+
+    def test_apply_preserves_preprovisioned_vercel_secrets_without_reading_values(self):
+        existing = [{"id": f"env_{index}", "key": key, "target": ["production"]} for index, key in enumerate(AGENT["secretReferences"])]
+        client = FakeClient(existing_env=existing)
+        with patch.dict(os.environ, {}, clear=True):
+            result = self.provider(client).apply(action())
+        mutated = [request["body"]["key"] for request in client.requests if "/env" in request["url"] and request["method"] in {"POST", "PATCH"}]
+        self.assertTrue(set(AGENT["secretReferences"]).isdisjoint(mutated))
+        self.assertEqual(result["attributes"]["spec"]["secretReferences"], AGENT["secretReferences"])
 
     @patch.dict(os.environ, {"OMNISEED_OPERATION_TOKEN": "operation-secret", "EVE_MODEL_TOKEN": "model-secret", "LILY_SESSION_JWT_SECRET": "session-secret"})
     def test_apply_waits_for_immutable_deployment_readiness_and_fails_closed(self):
