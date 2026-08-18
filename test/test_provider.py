@@ -191,6 +191,25 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(values["OMNISEED_READ_ONLY_INSPECTION"]["value"], "true")
         self.assertTrue(all(value["type"] == "encrypted" for value in values.values()))
 
+    @patch.dict(os.environ, {"DATABASE_URL": "database-secret", "OMNISEED_STATE_TOKEN": "state-secret", "OMNISEED_OPERATOR_TOKEN": "operator-secret", "OMNISEED_OPERATION_TOKEN": "operation-secret"})
+    def test_production_connector_binds_durable_state_and_server_credentials_without_evidence_leak(self):
+        client = FakeClient()
+        production = {
+            **CONNECTOR,
+            "readOnlyInspection": False,
+            "stateEndpoint": "https://omniseed-os.vercel.app/api/state/companies/omniseed_ecosystem/state",
+            "secretReferences": ["DATABASE_URL", "OMNISEED_STATE_TOKEN", "OMNISEED_OPERATOR_TOKEN", "OMNISEED_OPERATION_TOKEN"]
+        }
+        result = self.provider(client).apply(action("connectors", production))
+        values = {request["body"]["key"]: request["body"] for request in client.requests if "/env" in request["url"] and request["method"] in {"POST", "PATCH"}}
+        self.assertEqual(values["OMNISEED_STATE_ENDPOINT"]["value"], production["stateEndpoint"])
+        self.assertEqual(values["OMNISEED_READ_ONLY_INSPECTION"]["value"], "false")
+        for key in production["secretReferences"]:
+            self.assertEqual(values[key]["type"], "sensitive")
+        serialized = json.dumps(result)
+        for secret in ["database-secret", "state-secret", "operator-secret", "operation-secret"]:
+            self.assertNotIn(secret, serialized)
+
     def test_connector_observation_reads_engine_instance_projection(self):
         client = FakeClient()
         original = client.request
