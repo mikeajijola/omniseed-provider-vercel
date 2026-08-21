@@ -281,7 +281,10 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "promotion_precondition_failed")
 
     def test_status_checks_the_supplying_provider_boundary(self):
-        self.assertEqual(self.provider().status(), {"implementation_available": True, "configured": True, "connected": True, "healthy": True})
+        client = FakeClient()
+        provider = VercelProvider({"teamId": "team_1", "statusProjectId": "omniseed-ecosystem-os"}, client)
+        self.assertEqual(provider.status(), {"implementation_available": True, "configured": True, "connected": True, "healthy": True})
+        self.assertEqual(client.requests[-1]["url"], "https://api.vercel.com/v9/projects/omniseed-ecosystem-os?teamId=team_1")
         provider = VercelProvider({}, FakeClient())
         provider.client.token = None
         self.assertEqual(provider.status(), {"implementation_available": True, "configured": False, "connected": False, "healthy": False})

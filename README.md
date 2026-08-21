@@ -7,6 +7,13 @@ This is the single Provider package for the supplying organisation Vercel, with 
 
 Provider configuration contains only organisation-wide Vercel team/authentication settings and optional mappings from desired-state secret-reference names to server environment names. Resource deployment intent is derived directly from the selected canonical Omniform resource: project identity, numeric Vercel Git integration repository ID, full commit SHA, company and Agent identities, environment, expected endpoints, and secret-reference names. There is no second flat or hidden deployment definition.
 
+When `statusProjectId` is configured, Provider connection status is established
+against that declared Vercel project within `teamId`. This supports credentials
+whose project scope is valid even when Vercel does not expose the unrelated user
+profile endpoint, and proves access to the boundary reconciliation actually
+needs. Without it, the Provider retains the user endpoint as a compatibility
+probe.
+
 `plan` distinguishes project creation from reuse and reports the exact immutable revision, environment binding names, deployment impact, and expected evidence. `apply` uses Vercel `/v11/projects`, project environment endpoints, and `/v13/deployments`; it never invokes `eve deploy`, reads a local source tree, accepts a branch tip, or binds a pre-existing runtime URL. Declared secret references are resolved from the Provider process environment and written as sensitive project variables; values never enter Git, plans, runtime state, or evidence.
 
 `apply` returns a resource binding only after Vercel reports the deployment
