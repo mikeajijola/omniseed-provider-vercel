@@ -1,6 +1,6 @@
 {
   "name": "@omniseed/provider-vercel",
-  "version": "0.2.0-alpha.5",
+  "version": "0.2.0-alpha.6",
   "description": "Vercel Provider for immutable connector and Eve Agent runtimes",
   "type": "module",
   "private": true,

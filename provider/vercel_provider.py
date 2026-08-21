@@ -13,7 +13,7 @@ import urllib.request
 
 PROTOCOL = "omniseed.provider.protocol/1.0"
 PROVIDER_ID = "vercel"
-VERSION = "0.2.0-alpha.5"
+VERSION = "0.2.0-alpha.6"
 FAMILIES = ["agents", "connectors"]
 METHODS = [
     "provider.initialize", "provider.status", "provider.validate", "provider.plan",
@@ -229,7 +229,7 @@ class VercelProvider:
                 "pollIntervalSeconds": runtime.get("pollIntervalSeconds", 2),
             }
         if family == "connectors":
-            source, binding, endpoints, durable = raw.get("source") or {}, raw.get("companyBinding") or {}, raw.get("expectedEndpoints") or {}, raw.get("durableState") or {}
+            source, binding, endpoints, durable, access = raw.get("source") or {}, raw.get("companyBinding") or {}, raw.get("expectedEndpoints") or {}, raw.get("durableState") or {}, raw.get("access") or {}
             secret_references = list(dict.fromkeys([*(durable.get("credentialReferences") or []), *(raw.get("secretReferences") or [])]))
             return {
                 "projectId": raw.get("project"),
@@ -242,6 +242,7 @@ class VercelProvider:
                 "companyDefinitionPath": binding.get("path", "omniform.yaml"),
                 "stewardActorId": binding.get("stewardActorId"),
                 "readOnlyInspection": binding.get("readOnlyInspection") is True,
+                "publicStewardChat": access.get("stewardChat") == "public",
                 "expectedEnvironment": raw.get("environment"),
                 "stateEndpoint": durable.get("endpoint"),
                 "secretReferences": secret_references,
@@ -379,6 +380,7 @@ class VercelProvider:
                 "OMNISEED_STATE_ENDPOINT": spec.get("stateEndpoint"),
                 "OMNISEED_STEWARD_ACTOR_ID": spec["stewardActorId"],
                 "OMNISEED_READ_ONLY_INSPECTION": "true" if spec.get("readOnlyInspection") else "false",
+                "OMNISEED_PUBLIC_STEWARD_CHAT": "true" if spec.get("publicStewardChat") else "false",
             }
         if family != "agents":
             return {}
