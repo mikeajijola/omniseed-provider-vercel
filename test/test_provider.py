@@ -21,6 +21,7 @@ CANONICAL_AGENT = {
 }
 CANONICAL_CONNECTOR = {
     "project": "omniseed-os", "environment": "production", "provider": "vercel",
+    "access": {"stewardChat": "public"},
     "source": {"repository": "https://github.com/mikeajijola/omniseedos.git", "repositoryId": 987654, "revision": SHA},
     "companyBinding": {"companyId": "omniseed_ecosystem", "repository": "https://github.com/mikeajijola/omniseed-ecosystem-company.git", "desiredRevision": "b" * 40, "path": "omniform.yaml", "stewardActorId": "lily", "readOnlyInspection": True},
     "expectedEndpoints": {"company": "https://omniseed-os.vercel.app/api/company"}
@@ -115,6 +116,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(planned["source"], {"repository": "mikeajijola/omniseed-lily", "repositoryId": 123456, "commitSha": SHA})
         applied = self.provider().apply(connector)
         self.assertEqual(applied["attributes"]["spec"]["companyBindingUrl"], "https://omniseed-os.vercel.app/api/company")
+        self.assertTrue(applied["attributes"]["spec"]["publicStewardChat"])
 
     def test_agent_identity_source_remains_separate_from_shared_deployment_source(self):
         desired = copy.deepcopy(CANONICAL_AGENT)
@@ -243,12 +245,14 @@ class ProviderTests(unittest.TestCase):
 
     def test_connector_apply_provisions_safe_immutable_company_binding_environment(self):
         client = FakeClient()
-        self.provider(client).apply(action("connectors"))
+        desired = {**CONNECTOR, "publicStewardChat": True}
+        self.provider(client).apply(action("connectors", desired))
         values = {request["body"]["key"]: request["body"] for request in client.requests if "/env" in request["url"] and request["method"] in {"POST", "PATCH"}}
         self.assertEqual(values["OMNISEED_DESIRED_REVISION"]["value"], "b" * 40)
         self.assertEqual(values["OMNISEED_COMPANY_DEFINITION_URL"]["value"], f"https://raw.githubusercontent.com/mikeajijola/omniseed-ecosystem-company/{'b' * 40}/omniform.yaml")
         self.assertEqual(values["OMNISEED_STEWARD_ACTOR_ID"]["value"], "lily")
         self.assertEqual(values["OMNISEED_READ_ONLY_INSPECTION"]["value"], "true")
+        self.assertEqual(values["OMNISEED_PUBLIC_STEWARD_CHAT"]["value"], "true")
         self.assertTrue(all(value["type"] == "encrypted" for value in values.values()))
 
     @patch.dict(os.environ, {"DATABASE_URL": "database-secret", "OMNISEED_STATE_TOKEN": "state-secret", "OMNISEED_OPERATOR_TOKEN": "operator-secret", "OMNISEED_OPERATION_TOKEN": "operation-secret", "LILY_SESSION_JWT_SECRET": "session-secret"})
