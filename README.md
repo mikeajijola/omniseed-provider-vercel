@@ -16,6 +16,13 @@ probe.
 
 `plan` distinguishes project creation from reuse and reports the exact immutable revision, environment binding names, deployment impact, and expected evidence. `apply` uses Vercel `/v11/projects`, project environment endpoints, and `/v13/deployments`; it never invokes `eve deploy`, reads a local source tree, accepts a branch tip, or binds a pre-existing runtime URL. Declared secret references are resolved from the Provider process environment and written as sensitive project variables; values never enter Git, plans, runtime state, or evidence.
 
+An Agent may declare `runtime.source` when its immutable hosting artifact
+composes several company resources. The Provider deploys that exact source while
+retaining `implementation.repository` and `implementation.revision` as the
+Agent implementation identity used by runtime observation. This permits Lily
+and OmniSeed OS to share one Vercel project without turning Lily into an OS
+component or misreporting the OS repository as Lily's implementation.
+
 `apply` returns a resource binding only after Vercel reports the deployment
 `READY` and the independently read deployment source still matches the approved
 repository identity and full commit SHA. Failed, cancelled, timed-out, or

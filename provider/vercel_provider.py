@@ -186,18 +186,25 @@ class VercelProvider:
 
     def _spec(self, action):
         raw = ((action or {}).get("desired") or {}).get("spec") or {}
-        if raw.get("projectId"):
-            return dict(raw)
         family = (action or {}).get("family")
+        if raw.get("projectId"):
+            spec = dict(raw)
+            if family == "agents":
+                spec.setdefault("agentImplementationRepository", spec.get("sourceRepository"))
+                spec.setdefault("agentImplementationCommitSha", spec.get("sourceCommitSha"))
+            return spec
         if family == "agents":
             runtime, implementation, bootstrap = raw.get("runtime") or {}, raw.get("implementation") or {}, raw.get("bootstrap") or {}
+            source = runtime.get("source") or implementation
             endpoints = runtime.get("expectedEndpoints") or {}
             session = runtime.get("session") or {}
             return {
                 "projectId": runtime.get("project"),
-                "sourceRepository": self._repository(implementation.get("repository")),
-                "sourceRepositoryId": implementation.get("repositoryId"),
-                "sourceCommitSha": implementation.get("revision"),
+                "sourceRepository": self._repository(source.get("repository")),
+                "sourceRepositoryId": source.get("repositoryId"),
+                "sourceCommitSha": source.get("revision"),
+                "agentImplementationRepository": self._repository(implementation.get("repository")),
+                "agentImplementationCommitSha": implementation.get("revision"),
                 "expectedCompanyId": bootstrap.get("company"),
                 "expectedEnvironment": runtime.get("environment"),
                 "agentIdentity": raw.get("organisationalIdentity") or bootstrap.get("identity"),
@@ -246,7 +253,7 @@ class VercelProvider:
         issues = []
         common = ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "expectedCompanyId", "expectedEnvironment"]
         family_fields = {
-            "agents": ["agentIdentity", "secretReferences", "observationCredentialReference", "healthPath", "infoPath", "operationEndpoint", "operationCredentialReference", "sessionCredentialReference", "sessionIssuer", "sessionAudience"],
+            "agents": ["agentIdentity", "agentImplementationRepository", "agentImplementationCommitSha", "secretReferences", "observationCredentialReference", "healthPath", "infoPath", "operationEndpoint", "operationCredentialReference", "sessionCredentialReference", "sessionIssuer", "sessionAudience"],
             "connectors": ["expectedRepository", "desiredRevision", "companyDefinitionPath", "stewardActorId"]
         }
         if family == "connectors" and not spec.get("readOnlyInspection"):
@@ -260,6 +267,8 @@ class VercelProvider:
                 issues.append({"code": "missing_field", "field": field, "message": field + " is required"})
         if spec.get("sourceCommitSha") and not re.fullmatch(r"[0-9a-f]{40}", str(spec["sourceCommitSha"])):
             issues.append({"code": "source_not_immutable", "field": "sourceCommitSha", "message": "sourceCommitSha must be a full 40-character commit SHA"})
+        if spec.get("agentImplementationCommitSha") and not re.fullmatch(r"[0-9a-f]{40}", str(spec["agentImplementationCommitSha"])):
+            issues.append({"code": "implementation_not_immutable", "field": "agentImplementationCommitSha", "message": "agentImplementationCommitSha must be a full 40-character commit SHA"})
         if spec.get("desiredRevision") and not re.fullmatch(r"[0-9a-f]{40}", str(spec["desiredRevision"])):
             issues.append({"code": "company_source_not_immutable", "field": "desiredRevision", "message": "desiredRevision must be a full 40-character commit SHA"})
         if spec.get("sourceRepositoryId") and (isinstance(spec["sourceRepositoryId"], bool) or not isinstance(spec["sourceRepositoryId"], int)):
@@ -320,6 +329,7 @@ class VercelProvider:
             "family": action.get("family"), "resourceId": action.get("resourceId"),
             "project": {"id": spec.get("projectId"), "change": project_change},
             "source": {"repository": spec.get("sourceRepository"), "repositoryId": spec.get("sourceRepositoryId"), "commitSha": spec.get("sourceCommitSha")},
+            "implementation": ({"repository": spec.get("agentImplementationRepository"), "commitSha": spec.get("agentImplementationCommitSha")} if action.get("family") == "agents" else None),
             "environmentBindings": self._environment_binding_names(spec, action.get("family")),
             "deploymentImpact": {"target": spec.get("target", "production"), "environment": spec.get("expectedEnvironment")},
             "expectedEvidence": ["vercel_api_response"] + (["eve_agent_runtime_health"] if action.get("family") == "agents" else ["http_company_binding"])
@@ -369,8 +379,8 @@ class VercelProvider:
             "OMNISEED_COMPANY_REF": spec["expectedCompanyId"],
             "OMNISEED_AGENT_IDENTITY": spec["agentIdentity"],
             "OMNISEED_ENVIRONMENT": spec["expectedEnvironment"],
-            "OMNISEED_SOURCE_REPOSITORY": spec["sourceRepository"],
-            "OMNISEED_SOURCE_COMMIT_SHA": spec["sourceCommitSha"],
+            "OMNISEED_SOURCE_REPOSITORY": spec.get("agentImplementationRepository") or spec["sourceRepository"],
+            "OMNISEED_SOURCE_COMMIT_SHA": spec.get("agentImplementationCommitSha") or spec["sourceCommitSha"],
             "OMNISEED_OPERATION_ENDPOINT": spec["operationEndpoint"],
             "OMNISEED_OPERATION_CREDENTIAL_ENV": spec["operationCredentialReference"],
             "OMNISEED_SESSION_CREDENTIAL_ENV": spec["sessionCredentialReference"],
@@ -489,7 +499,9 @@ class VercelProvider:
             runtime_identity = info.get("agentIdentity") or (info.get("agent") or {}).get("identity")
             runtime_environment = info.get("environment")
             runtime_source = info.get("source") or {}
-            runtime_matches = runtime_company == spec["expectedCompanyId"] and runtime_identity == spec["agentIdentity"] and runtime_environment == spec["expectedEnvironment"] and runtime_source.get("repository") == spec["sourceRepository"] and runtime_source.get("commitSha") == spec["sourceCommitSha"]
+            implementation_repository = spec.get("agentImplementationRepository") or spec["sourceRepository"]
+            implementation_commit = spec.get("agentImplementationCommitSha") or spec["sourceCommitSha"]
+            runtime_matches = runtime_company == spec["expectedCompanyId"] and runtime_identity == spec["agentIdentity"] and runtime_environment == spec["expectedEnvironment"] and runtime_source.get("repository") == implementation_repository and runtime_source.get("commitSha") == implementation_commit
             healthy = deployment_ok and health.get("ok") is True and runtime_matches
             snapshot.update({"health": health, "runtime": info, "runtimeIdentityMatches": runtime_matches})
             evidence.append({"type": "eve_agent_runtime_health", "source": PROVIDER_ID, "product": "eve", "deploymentId": spec["deploymentId"], "health": health, "runtime": info, "matchesDesired": runtime_matches, "observedAt": checked_at})

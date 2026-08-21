@@ -1,4 +1,5 @@
 import json
+import copy
 import os
 import subprocess
 import sys
@@ -114,6 +115,23 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(planned["source"], {"repository": "mikeajijola/omniseed-lily", "repositoryId": 123456, "commitSha": SHA})
         applied = self.provider().apply(connector)
         self.assertEqual(applied["attributes"]["spec"]["companyBindingUrl"], "https://omniseed-os.vercel.app/api/company")
+
+    def test_agent_identity_source_remains_separate_from_shared_deployment_source(self):
+        desired = copy.deepcopy(CANONICAL_AGENT)
+        desired["runtime"]["project"] = "omniseed-ecosystem-os"
+        desired["runtime"]["source"] = {
+            "repository": "https://github.com/mikeajijola/omniseedos.git",
+            "repositoryId": 987654,
+            "revision": "c" * 40,
+        }
+        normalized = self.provider()._spec(action("agents", desired))
+        self.assertEqual(normalized["sourceRepository"], "mikeajijola/omniseedos")
+        self.assertEqual(normalized["sourceCommitSha"], "c" * 40)
+        self.assertEqual(normalized["agentImplementationRepository"], "mikeajijola/omniseed-lily")
+        self.assertEqual(normalized["agentImplementationCommitSha"], SHA)
+        environment = self.provider()._public_environment(normalized, "agents")
+        self.assertEqual(environment["OMNISEED_SOURCE_REPOSITORY"], "mikeajijola/omniseed-lily")
+        self.assertEqual(environment["OMNISEED_SOURCE_COMMIT_SHA"], SHA)
 
     def test_plan_reports_create_or_reuse_exact_revision_bindings_and_evidence(self):
         reused = self.provider().plan(action())
