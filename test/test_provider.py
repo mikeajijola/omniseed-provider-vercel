@@ -171,12 +171,12 @@ class ProviderTests(unittest.TestCase):
 
     @patch.dict(os.environ, {"OMNISEED_OPERATION_TOKEN": "operation-secret", "EVE_MODEL_TOKEN": "model-secret", "LILY_SESSION_JWT_SECRET": "session-secret"})
     def test_apply_reuses_existing_project_rotates_supplied_secret_and_propagates_api_failure(self):
-        client = FakeClient(project_exists=True, existing_env=[{"id": "env_1", "key": "OMNISEED_OPERATION_TOKEN", "target": ["production", "preview"]}])
+        client = FakeClient(project_exists=True, existing_env=[{"id": "env_1", "key": "OMNISEED_OPERATION_TOKEN", "type": "sensitive", "target": ["production", "preview"]}])
         self.provider(client).apply(action())
         self.assertFalse(any(r["method"] == "POST" and r["url"].endswith("/v11/projects") for r in client.requests))
         rotated = [r for r in client.requests if r["method"] == "PATCH" and "/env/env_1" in r["url"]]
         self.assertEqual(len(rotated), 1)
-        self.assertEqual(rotated[0]["body"], {"key": "OMNISEED_OPERATION_TOKEN", "value": "operation-secret", "type": "sensitive", "target": ["production"]})
+        self.assertEqual(rotated[0]["body"], {"value": "operation-secret", "type": "sensitive", "target": ["production"]})
         with self.assertRaises(ProviderError): self.provider(FakeClient(fail_deploy=True)).apply(action())
 
     def test_apply_preserves_preprovisioned_vercel_secrets_without_reading_values(self):
