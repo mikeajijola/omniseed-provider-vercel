@@ -417,7 +417,8 @@ class VercelProvider:
             current = existing.get((value["key"], value.get("gitBranch")))
             if current and current.get("id"):
                 endpoint = "https://api.vercel.com/v9/projects/" + urllib.parse.quote(spec["projectId"], safe="") + "/env/" + urllib.parse.quote(current["id"], safe="") + query
-                self.client.request(endpoint, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="PATCH", body=value)
+                patch = {key: item for key, item in value.items() if key != "key"} if current.get("type") == "sensitive" else value
+                self.client.request(endpoint, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="PATCH", body=patch)
             else:
                 self.client.request(base + query, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="POST", body=value)
 
