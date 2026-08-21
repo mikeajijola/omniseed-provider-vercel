@@ -277,7 +277,10 @@ class VercelProvider:
         connected = healthy = False
         if configured:
             try:
-                self.client.request("https://api.vercel.com/v2/user", authenticated=True)
+                status_project = self.configuration.get("statusProjectId")
+                endpoint = (self._project_endpoint({"projectId": status_project})
+                            if status_project else "https://api.vercel.com/v2/user")
+                self.client.request(endpoint, authenticated=True)
                 connected = healthy = True
             except ProviderError:
                 pass
