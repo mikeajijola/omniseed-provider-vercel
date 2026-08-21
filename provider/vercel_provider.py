@@ -184,6 +184,11 @@ class VercelProvider:
     def _endpoint_path(value, default):
         return urllib.parse.urlparse(value).path if value else default
 
+    @staticmethod
+    def _endpoint_origin(value):
+        parsed = urllib.parse.urlparse(value or "")
+        return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme == "https" and parsed.netloc else None
+
     def _spec(self, action):
         raw = ((action or {}).get("desired") or {}).get("spec") or {}
         family = (action or {}).get("family")
@@ -210,6 +215,7 @@ class VercelProvider:
                 "agentIdentity": raw.get("organisationalIdentity") or bootstrap.get("identity"),
                 "secretReferences": runtime.get("secretReferences") or [],
                 "observationCredentialReference": runtime.get("observationCredentialReference"),
+                "runtimeUrl": self._endpoint_origin(endpoints.get("health")),
                 "healthPath": self._endpoint_path(endpoints.get("health"), "/health"),
                 "infoPath": self._endpoint_path(endpoints.get("info"), "/info"),
                 "operationEndpoint": bootstrap.get("omniseedEndpoint"),
@@ -249,6 +255,7 @@ class VercelProvider:
         return dict(raw)
 
     def _issues(self, action):
+        raw = ((action or {}).get("desired") or {}).get("spec") or {}
         family, resource_id, spec = action.get("family"), action.get("resourceId"), self._spec(action)
         issues = []
         common = ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "expectedCompanyId", "expectedEnvironment"]
@@ -275,7 +282,7 @@ class VercelProvider:
             issues.append({"code": "invalid_repository_id", "field": "sourceRepositoryId", "message": "sourceRepositoryId must be the numeric Vercel Git integration ID"})
         if spec.get("expectedCompanyId") and self.company_id and spec["expectedCompanyId"] != self.company_id:
             issues.append({"code": "company_boundary", "message": "Action company does not match Provider context"})
-        if family == "agents" and "runtimeUrl" in spec:
+        if family == "agents" and raw.get("projectId") and "runtimeUrl" in raw:
             issues.append({"code": "caller_runtime_forbidden", "field": "runtimeUrl", "message": "Runtime URL must come from Vercel deployment state"})
         if family == "agents" and spec.get("sessionCredentialReference") not in (spec.get("secretReferences") or []):
             issues.append({"code": "missing_secret_reference", "field": "sessionCredentialReference", "message": "The Eve session credential must be included in secretReferences"})
@@ -490,7 +497,7 @@ class VercelProvider:
         return os.environ.get(name) if name else None
 
     def _eve(self, spec):
-        return EveClient(self.client, spec["deploymentUrl"], self._runtime_token(spec), spec.get("timeoutSeconds", 10), spec.get("healthPath", "/health"), spec.get("infoPath", "/info"))
+        return EveClient(self.client, spec.get("runtimeUrl") or spec["deploymentUrl"], self._runtime_token(spec), spec.get("timeoutSeconds", 10), spec.get("healthPath", "/health"), spec.get("infoPath", "/info"))
 
     def observe(self, resource):
         attributes = resource.get("attributes") or {}

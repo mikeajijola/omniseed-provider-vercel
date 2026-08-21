@@ -129,6 +129,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(normalized["sourceCommitSha"], "c" * 40)
         self.assertEqual(normalized["agentImplementationRepository"], "mikeajijola/omniseed-lily")
         self.assertEqual(normalized["agentImplementationCommitSha"], SHA)
+        self.assertEqual(normalized["runtimeUrl"], "https://omniseed-lily.vercel.app")
         environment = self.provider()._public_environment(normalized, "agents")
         self.assertEqual(environment["OMNISEED_SOURCE_REPOSITORY"], "mikeajijola/omniseed-lily")
         self.assertEqual(environment["OMNISEED_SOURCE_COMMIT_SHA"], SHA)
@@ -209,11 +210,15 @@ class ProviderTests(unittest.TestCase):
 
     @patch.dict(os.environ, {"EVE_RUNTIME_TOKEN": "runtime-secret"})
     def test_observe_verifies_deployment_eve_company_identity_environment_and_source(self):
-        result = self.provider().observe(binding())
+        client = FakeClient()
+        resource = binding()
+        resource["attributes"]["spec"]["runtimeUrl"] = "https://omniseed-lily.vercel.app"
+        result = self.provider(client).observe(resource)
         self.assertEqual(result["status"], "healthy")
         self.assertTrue(result["snapshot"]["sourceMatches"])
         self.assertTrue(result["snapshot"]["runtimeIdentityMatches"])
         self.assertEqual([e["type"] for e in result["evidence"]], ["vercel_api_response", "eve_agent_runtime_health"])
+        self.assertTrue(any(request["url"].startswith("https://omniseed-lily.vercel.app/") for request in client.requests))
         self.assertNotIn("runtime-secret", json.dumps(result))
 
     @patch.dict(os.environ, {"EVE_RUNTIME_TOKEN": "runtime-secret"})
