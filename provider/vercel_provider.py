@@ -395,7 +395,13 @@ class VercelProvider:
         if isinstance(secret_references, dict):
             secret_references = list(secret_references)
         preserved = set(existing_secret_references or [])
-        values.extend({"key": reference, "value": self._secret_value(reference), "type": "sensitive", "target": [target]} for reference in sorted(secret_references) if reference not in preserved)
+        for reference in sorted(secret_references):
+            aliases = self.configuration.get("secretReferenceEnvironment") or {}
+            supplied = os.environ.get(aliases.get(reference, reference))
+            if supplied:
+                values.append({"key": reference, "value": supplied, "type": "sensitive", "target": [target]})
+            elif reference not in preserved:
+                self._secret_value(reference)
         return values
 
     def _upsert_environment(self, spec, family):
