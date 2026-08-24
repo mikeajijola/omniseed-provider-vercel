@@ -15,7 +15,7 @@ import urllib.request
 
 PROTOCOL = "omniseed.provider.protocol/1.0"
 PROVIDER_ID = "vercel"
-VERSION = "0.2.0-alpha.9"
+VERSION = "0.2.0-alpha.10"
 FAMILIES = ["agents", "connectors"]
 METHODS = [
     "provider.initialize", "provider.status", "provider.validate", "provider.plan",
@@ -573,7 +573,15 @@ class VercelProvider:
         public, secret_references, resources, configuration_hash = self._deployment_configuration(shared)
         project_change, _ = self._ensure_project(spec)
         environment_changed = self._upsert_shared_environment(spec, public, secret_references)
-        deployment = None if environment_changed else self._find_reusable_deployment(spec, configuration_hash)
+        cache_key = (self._deployment_key(spec), configuration_hash)
+        # A deployment created by this Provider process follows the combined
+        # environment write and is authoritative for the rest of this apply
+        # transaction even when Vercel's environment listing is eventually
+        # consistent. Across process restarts, reuse still requires an
+        # unchanged environment view plus independent deployment discovery.
+        deployment = self.deployment_cache.get(cache_key)
+        if deployment is None and not environment_changed:
+            deployment = self._find_reusable_deployment(spec, configuration_hash)
         body = {
             "name": spec["projectId"], "project": spec["projectId"], "target": spec.get("target", "production"),
             "gitSource": {"type": "github", "repoId": spec["sourceRepositoryId"], "ref": spec["sourceCommitSha"], "sha": spec["sourceCommitSha"]},
@@ -597,7 +605,7 @@ class VercelProvider:
         deployment_url = host if host.startswith("https://") else "https://" + host
         applied_spec = {**spec, "deploymentId": deployment_id, "deploymentUrl": deployment_url}
         self._wait_for_deployment(applied_spec)
-        self.deployment_cache[(self._deployment_key(spec), configuration_hash)] = {"id": deployment_id, "url": host}
+        self.deployment_cache[cache_key] = {"id": deployment_id, "url": host}
         if family == "connectors":
             applied_spec["companyBindingUrl"] = spec.get("companyBindingUrl") or deployment_url.rstrip("/") + spec.get("companyBindingPath", "/api/company")
         return {
