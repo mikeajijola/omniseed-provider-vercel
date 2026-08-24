@@ -139,6 +139,12 @@ class ProviderTests(unittest.TestCase):
         self.assertFalse(self.provider().validate(action("workflows"))["valid"])
         self.assertFalse(self.provider().validate(action("agents", {**AGENT, "runtimeUrl": "https://caller.test"}))["valid"])
 
+    def test_nondeployment_connector_is_not_misread_as_a_shared_deployment(self):
+        operation = action("connectors", {"companyBinding": "omniseed_ecosystem", "endpoint": "https://omniseed.example"}, "omniseed_operations")
+        normalized = self.provider()._spec(operation)
+        self.assertIsNone(normalized["projectId"])
+        self.assertFalse(self.provider().validate(operation)["valid"])
+
     def test_canonical_omniform_resources_normalize_without_shadow_deployment_state(self):
         agent = action("agents", CANONICAL_AGENT)
         connector = action("connectors", CANONICAL_CONNECTOR)
@@ -183,6 +189,7 @@ class ProviderTests(unittest.TestCase):
             "configuration": {"runtimeAuthTokenEnv": "LILY_RUNTIME_OBSERVATION_TOKEN"},
             "context": {"companyId": "omniseed_ecosystem", "desiredResources": [
                 {"family": "agents", "id": "lily", "spec": agent["desired"]["spec"]},
+                {"family": "connectors", "id": "omniseed_operations", "spec": {"companyBinding": "omniseed_ecosystem", "endpoint": "https://omniseed.example"}},
                 {"family": "connectors", "id": "omniseed_os", "spec": connector["desired"]["spec"]}
             ]}
         })

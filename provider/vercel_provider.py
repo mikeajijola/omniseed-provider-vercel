@@ -15,7 +15,7 @@ import urllib.request
 
 PROTOCOL = "omniseed.provider.protocol/1.0"
 PROVIDER_ID = "vercel"
-VERSION = "0.2.0-alpha.8"
+VERSION = "0.2.0-alpha.9"
 FAMILIES = ["agents", "connectors"]
 METHODS = [
     "provider.initialize", "provider.status", "provider.validate", "provider.plan",
@@ -236,7 +236,11 @@ class VercelProvider:
                 "pollIntervalSeconds": runtime.get("pollIntervalSeconds", 2),
             }
         if family == "connectors":
-            source, binding, endpoints, durable, access = raw.get("source") or {}, raw.get("companyBinding") or {}, raw.get("expectedEndpoints") or {}, raw.get("durableState") or {}, raw.get("access") or {}
+            source = raw.get("source") if isinstance(raw.get("source"), dict) else {}
+            binding = raw.get("companyBinding") if isinstance(raw.get("companyBinding"), dict) else {}
+            endpoints = raw.get("expectedEndpoints") if isinstance(raw.get("expectedEndpoints"), dict) else {}
+            durable = raw.get("durableState") if isinstance(raw.get("durableState"), dict) else {}
+            access = raw.get("access") if isinstance(raw.get("access"), dict) else {}
             secret_references = list(dict.fromkeys([*(durable.get("credentialReferences") or []), *(raw.get("secretReferences") or [])]))
             return {
                 "projectId": raw.get("project"),
@@ -452,9 +456,21 @@ class VercelProvider:
         matches = []
         for resource in self.desired_resources:
             family = resource.get("family")
+            raw = resource.get("spec") or {}
+            if family == "agents":
+                runtime = raw.get("runtime") if isinstance(raw.get("runtime"), dict) else {}
+                source = runtime.get("source") if isinstance(runtime.get("source"), dict) else {}
+                if not runtime.get("project") or not source.get("repositoryId") or not source.get("revision"):
+                    continue
+            elif family == "connectors":
+                source = raw.get("source") if isinstance(raw.get("source"), dict) else {}
+                if not raw.get("project") or not source.get("repositoryId") or not source.get("revision"):
+                    continue
+            else:
+                continue
             candidate_action = {
                 "family": family, "resourceId": resource.get("id"),
-                "desired": {"spec": resource.get("spec") or {}}
+                "desired": {"spec": raw}
             }
             candidate = self._spec(candidate_action)
             if self._deployment_key(candidate) != self._deployment_key(spec):
