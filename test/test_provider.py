@@ -32,13 +32,28 @@ def action(family="agents", spec=None, resource_id=None):
     return {"id": "act-1", "family": family, "resourceId": resource_id or ("lily" if family == "agents" else "omniseed_os"), "desired": {"spec": spec or (AGENT if family == "agents" else CONNECTOR)}}
 
 
+def shared_actions():
+    agent = copy.deepcopy(CANONICAL_AGENT)
+    agent["runtime"]["project"] = "omniseed-ecosystem-os"
+    agent["runtime"]["source"] = {
+        "repository": "https://github.com/mikeajijola/omniseedos.git",
+        "repositoryId": 987654,
+        "revision": "c" * 40,
+    }
+    connector = copy.deepcopy(CANONICAL_CONNECTOR)
+    connector["project"] = "omniseed-ecosystem-os"
+    connector["source"]["revision"] = "c" * 40
+    return action("agents", agent), action("connectors", connector)
+
+
 class FakeClient:
     token = "vercel-secret-must-not-leak"
-    def __init__(self, project_exists=True, state="READY", runtime=None, commit=SHA, fail_deploy=False, existing_env=None):
+    def __init__(self, project_exists=True, state="READY", runtime=None, commit=SHA, fail_deploy=False, existing_env=None, deployments=None):
         self.project_exists, self.state, self.commit, self.fail_deploy = project_exists, state, commit, fail_deploy
         self.runtime = runtime or {"companyRef": "omniseed_ecosystem", "agentIdentity": "lily", "environment": "production", "source": {"repository": "mikeajijola/omniseed-lily", "commitSha": SHA}, "agent": {"framework": "eve"}}
         self.requests = []
         self.existing_env = existing_env or []
+        self.deployments = deployments or []
         self.states = list(state) if isinstance(state, (list, tuple)) else None
         self.deployment_source = None
 
@@ -48,12 +63,19 @@ class FakeClient:
             return 200, {"user": {"id": "user_1"}}
         if "/v10/projects/" in url and url.split("?")[0].endswith("/env"):
             if method == "GET": return 200, {"envs": self.existing_env}
-            if method == "POST": return 200, {"created": True}
-        if "/v9/projects/" in url and "/env/" in url and method == "PATCH": return 200, {"updated": True}
+            if method == "POST":
+                self.existing_env.append({"id": f"env_{len(self.existing_env) + 1}", **body})
+                return 200, {"created": True}
+        if "/v9/projects/" in url and "/env/" in url and method == "PATCH":
+            environment_id = url.split("/env/", 1)[1].split("?", 1)[0]
+            for item in self.existing_env:
+                if item.get("id") == environment_id: item.update(body)
+            return 200, {"updated": True}
         if "/v9/projects/" in url and method == "GET":
             if not self.project_exists: raise ProviderError("missing", "remote_http_error", {"status": 404})
             return 200, {"id": "prj_1", "name": "lily-production"}
         if url.endswith("/v11/projects") and method == "POST": return 200, {"id": "prj_created"}
+        if "/v7/deployments?" in url and method == "GET": return 200, {"deployments": self.deployments}
         if "/v13/deployments" in url and method == "POST":
             if self.fail_deploy: raise ProviderError("api failed", "remote_http_error", {"status": 500})
             self.deployment_source = {
@@ -87,8 +109,8 @@ def binding(spec=AGENT, family="agents"):
 
 
 class ProviderTests(unittest.TestCase):
-    def provider(self, client=None):
-        provider = VercelProvider({"runtimeAuthTokenEnv": "EVE_RUNTIME_TOKEN"}, client or FakeClient())
+    def provider(self, client=None, configuration=None):
+        provider = VercelProvider({"runtimeAuthTokenEnv": "EVE_RUNTIME_TOKEN", **(configuration or {})}, client or FakeClient())
         provider.company_id = "omniseed_ecosystem"
         return provider
 
@@ -137,6 +159,58 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(environment["OMNISEED_SOURCE_COMMIT_SHA"], SHA)
         self.assertEqual(environment["LILY_MODEL"], "nvidia/nemotron-3.5-lightning-free")
 
+    @patch.dict(os.environ, {
+        "OMNISEED_OPERATION_TOKEN": "operation-secret", "LILY_RUNTIME_OBSERVATION_TOKEN": "observation-secret",
+        "LILY_SESSION_JWT_SECRET": "session-secret"
+    })
+    def test_shared_agent_and_interface_resources_create_one_immutable_deployment(self):
+        agent, connector = shared_actions()
+        client = FakeClient()
+        provider = self.provider(client)
+        provider.initialize({
+            "protocolVersion": PROTOCOL,
+            "configuration": {"runtimeAuthTokenEnv": "LILY_RUNTIME_OBSERVATION_TOKEN"},
+            "context": {"companyId": "omniseed_ecosystem", "desiredResources": [
+                {"family": "agents", "id": "lily", "spec": agent["desired"]["spec"]},
+                {"family": "connectors", "id": "omniseed_os", "spec": connector["desired"]["spec"]}
+            ]}
+        })
+        lily = provider.apply(agent)
+        interface = provider.apply(connector)
+        deployments = [request for request in client.requests if request["method"] == "POST" and "/v13/deployments" in request["url"]]
+        self.assertEqual(len(deployments), 1)
+        self.assertEqual(lily["providerResourceId"], interface["providerResourceId"])
+        self.assertEqual(lily["attributes"]["sharedResources"], ["agents:lily", "connectors:omniseed_os"])
+        self.assertEqual(interface["attributes"]["deploymentChange"], "reuse")
+        self.assertEqual(deployments[0]["body"]["projectSettings"]["framework"], "eve")
+        environment_keys = {item["key"] for item in client.existing_env}
+        self.assertTrue({"LILY_MODEL", "OMNISEED_COMPANY_DEFINITION_URL", "OMNISEED_STEWARD_ACTOR_ID"}.issubset(environment_keys))
+
+    @patch.dict(os.environ, {
+        "OMNISEED_OPERATION_TOKEN": "operation-secret", "LILY_RUNTIME_OBSERVATION_TOKEN": "observation-secret",
+        "LILY_SESSION_JWT_SECRET": "session-secret"
+    })
+    def test_shared_deployment_is_recovered_and_reused_after_provider_restart(self):
+        agent, connector = shared_actions()
+        resources = [
+            {"family": "agents", "id": "lily", "spec": agent["desired"]["spec"]},
+            {"family": "connectors", "id": "omniseed_os", "spec": connector["desired"]["spec"]}
+        ]
+        first_client, first = FakeClient(), self.provider()
+        first.client = first_client
+        first.initialize({"protocolVersion": PROTOCOL, "configuration": {}, "context": {"companyId": "omniseed_ecosystem", "desiredResources": resources}})
+        created = first.apply(agent)
+        deployment_request = next(request for request in first_client.requests if request["method"] == "POST" and "/v13/deployments" in request["url"])
+        listed = {"uid": "dpl_1", "url": "lily.example.test", "state": "READY", "meta": deployment_request["body"]["meta"]}
+        restarted_client = FakeClient(existing_env=copy.deepcopy(first_client.existing_env), deployments=[listed], commit="c" * 40)
+        restarted_client.deployment_source = copy.deepcopy(first_client.deployment_source)
+        restarted = self.provider(restarted_client)
+        restarted.initialize({"protocolVersion": PROTOCOL, "configuration": {}, "context": {"companyId": "omniseed_ecosystem", "desiredResources": resources}})
+        recovered = restarted.apply(connector)
+        self.assertEqual(recovered["providerResourceId"], created["providerResourceId"])
+        self.assertEqual(recovered["attributes"]["deploymentChange"], "reuse")
+        self.assertFalse(any(request["method"] == "POST" and "/v13/deployments" in request["url"] for request in restarted_client.requests))
+
     def test_plan_reports_create_or_reuse_exact_revision_bindings_and_evidence(self):
         reused = self.provider().plan(action())
         created = self.provider(FakeClient(project_exists=False)).plan(action())
@@ -174,9 +248,9 @@ class ProviderTests(unittest.TestCase):
         self.assertNotIn("operation-secret", json.dumps(result))
 
     @patch.dict(os.environ, {"OMNISEED_OPERATION_TOKEN": "operation-secret", "EVE_MODEL_TOKEN": "model-secret", "LILY_SESSION_JWT_SECRET": "session-secret"})
-    def test_apply_reuses_existing_project_rotates_supplied_secret_and_propagates_api_failure(self):
+    def test_apply_reuses_existing_project_rotates_only_explicit_secret_and_propagates_api_failure(self):
         client = FakeClient(project_exists=True, existing_env=[{"id": "env_1", "key": "OMNISEED_OPERATION_TOKEN", "type": "sensitive", "target": ["production", "preview"]}])
-        self.provider(client).apply(action())
+        self.provider(client, {"rotateSecretReferences": ["OMNISEED_OPERATION_TOKEN"]}).apply(action())
         self.assertFalse(any(r["method"] == "POST" and r["url"].endswith("/v11/projects") for r in client.requests))
         rotated = [r for r in client.requests if r["method"] == "PATCH" and "/env/env_1" in r["url"]]
         self.assertEqual(len(rotated), 1)
