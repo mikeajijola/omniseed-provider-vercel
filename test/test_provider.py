@@ -333,11 +333,15 @@ class ProviderTests(unittest.TestCase):
         client = FakeClient()
         resource = binding()
         resource["attributes"]["spec"]["runtimeUrl"] = "https://omniseed-lily.vercel.app"
-        result = self.provider(client).observe(resource)
+        provider = self.provider(client)
+        result = provider.observe(resource)
         self.assertEqual(result["status"], "healthy")
         self.assertTrue(result["snapshot"]["sourceMatches"])
         self.assertTrue(result["snapshot"]["runtimeIdentityMatches"])
         self.assertEqual([e["type"] for e in result["evidence"]], ["vercel_api_response", "eve_agent_runtime_health"])
+        self.assertEqual(len({e["id"] for e in result["evidence"]}), 2)
+        repeated = provider.observe(resource)
+        self.assertEqual([e["id"] for e in repeated["evidence"]], [e["id"] for e in result["evidence"]])
         self.assertTrue(any(request["url"].startswith("https://omniseed-lily.vercel.app/") for request in client.requests))
         self.assertNotIn("runtime-secret", json.dumps(result))
 
@@ -360,6 +364,7 @@ class ProviderTests(unittest.TestCase):
         observed = self.provider(client).observe(connector_binding)
         self.assertEqual(observed["status"], "healthy")
         self.assertEqual(observed["evidence"][1]["type"], "http_company_binding")
+        self.assertTrue(all(item["id"].startswith("vercel_") for item in observed["evidence"]))
 
     def test_connector_apply_provisions_safe_immutable_company_binding_environment(self):
         client = FakeClient()
