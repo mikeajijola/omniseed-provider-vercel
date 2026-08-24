@@ -5,7 +5,7 @@ This is the single Provider package for the supplying organisation Vercel, with 
 - `agents` maps to Eve, Vercel Functions, and AI Gateway.
 - `connectors` maps to Vercel Functions and deployment services.
 
-Provider configuration contains only organisation-wide Vercel team/authentication settings and optional mappings from desired-state secret-reference names to server environment names. Resource deployment intent is derived directly from the selected canonical Omniform resource: project identity, numeric Vercel Git integration repository ID, full commit SHA, company and Agent identities, environment, expected endpoints, and secret-reference names. There is no second flat or hidden deployment definition.
+Provider configuration contains only organisation-wide Vercel team/authentication settings and optional mappings from desired-state secret-reference names to server environment names. Resource deployment intent is derived directly from the selected canonical Omniform resource: project identity, numeric Vercel Git integration repository ID, full commit SHA, company and Agent identities, the model selected beneath the Eve implementation, environment, expected endpoints, and secret-reference names. The Provider provisions that declared model as `LILY_MODEL`; a dashboard-only model choice is not a second desired-state input. There is no second flat or hidden deployment definition.
 
 When `statusProjectId` is configured, Provider connection status is established
 against that declared Vercel project within `teamId`. This supports credentials
