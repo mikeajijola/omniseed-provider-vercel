@@ -23,6 +23,17 @@ Agent implementation identity used by runtime observation. This permits Lily
 and OmniSeed OS to share one Vercel project without turning Lily into an OS
 component or misreporting the OS repository as Lily's implementation.
 
+OmniSeed supplies the Provider only the approved desired resources selected for
+Vercel. When resources across supported primitive families declare the same
+project, repository integration identity, full source commit, and target, the
+Provider treats them as one shared immutable deployment. It combines their
+non-secret environment bindings and secret-reference names, rejects conflicting
+bindings, creates one deployment, and returns distinct resource bindings that
+refer to that deployment. A restarted Provider independently finds a reusable
+ready deployment through Vercel's deployment API and verifies the exact source
+again before reuse. This is deployment coalescing beneath the Provider boundary;
+it does not collapse the Agent and interface resources or their observations.
+
 `apply` returns a resource binding only after Vercel reports the deployment
 `READY` and the independently read deployment source still matches the approved
 repository identity and full commit SHA. Failed, cancelled, timed-out, or
@@ -42,7 +53,9 @@ Secret values may be supplied either to the Provider process or pre-provisioned
 directly in the declared Vercel project and target environment. Existing secret
 bindings are preserved without reading, exporting, or rewriting their values;
 missing bindings must be available to the Provider process and fail closed
-otherwise. Public bindings derived from the approved declaration are still
-reconciled on every apply.
+otherwise. Explicit rotation uses the Provider configuration's
+`rotateSecretReferences` allow-list and requires the replacement value in the
+Provider process. Public bindings derived from the approved declaration are
+still reconciled on every apply.
 
 Run one JSON-RPC 2.0 message per line with `python provider/vercel_provider.py`. Run tests with `npm test`.

@@ -2,6 +2,7 @@
 """Vercel Provider for connector deployments and immutable Eve Agent runtimes."""
 
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -13,7 +14,7 @@ import urllib.request
 
 PROTOCOL = "omniseed.provider.protocol/1.0"
 PROVIDER_ID = "vercel"
-VERSION = "0.2.0-alpha.6"
+VERSION = "0.2.0-alpha.7"
 FAMILIES = ["agents", "connectors"]
 METHODS = [
     "provider.initialize", "provider.status", "provider.validate", "provider.plan",
@@ -154,12 +155,16 @@ class VercelProvider:
         self.configuration = configuration or {}
         self.client = client or NetworkClient()
         self.company_id = None
+        self.desired_resources = []
+        self.deployment_cache = {}
 
     def initialize(self, params):
         if params.get("protocolVersion") != PROTOCOL:
             raise ProviderError("Unsupported protocol version", "protocol_mismatch", {"supported": PROTOCOL})
         self.configuration = params.get("configuration") or {}
-        self.company_id = (params.get("context") or {}).get("companyId")
+        context = params.get("context") or {}
+        self.company_id = context.get("companyId")
+        self.desired_resources = context.get("desiredResources") or []
         return {
             "protocolVersion": PROTOCOL,
             "provider": {"id": PROVIDER_ID, "name": "Vercel", "version": VERSION},
@@ -433,37 +438,154 @@ class VercelProvider:
             else:
                 self.client.request(base + query, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="POST", body=value)
 
+    @staticmethod
+    def _deployment_key(spec):
+        return (
+            spec.get("projectId"), spec.get("sourceRepository"),
+            str(spec.get("sourceRepositoryId")), spec.get("sourceCommitSha"),
+            spec.get("target", "production")
+        )
+
+    def _shared_deployment_specs(self, action, spec):
+        """Resolve approved Provider resources sharing one immutable deployment."""
+        matches = []
+        for resource in self.desired_resources:
+            family = resource.get("family")
+            candidate_action = {
+                "family": family, "resourceId": resource.get("id"),
+                "desired": {"spec": resource.get("spec") or {}}
+            }
+            candidate = self._spec(candidate_action)
+            if self._deployment_key(candidate) != self._deployment_key(spec):
+                continue
+            issues = self._issues(candidate_action)
+            if issues:
+                raise ProviderError("A shared deployment resource is invalid", "invalid_action", {
+                    "resourceId": resource.get("id"), "issues": issues
+                })
+            matches.append((family, resource.get("id"), candidate))
+        if not matches:
+            matches.append((action["family"], action["resourceId"], spec))
+        return sorted(matches, key=lambda item: (item[0], item[1]))
+
+    def _deployment_configuration(self, shared):
+        public, secret_references, resources = {}, set(), []
+        for family, resource_id, spec in shared:
+            resources.append(f"{family}:{resource_id}")
+            for key, value in self._public_environment(spec, family).items():
+                if value is None:
+                    continue
+                if key in public and public[key] != value:
+                    raise ProviderError(
+                        "Shared deployment resources require conflicting environment values",
+                        "shared_environment_conflict", {"key": key}
+                    )
+                public[key] = value
+            references = spec.get("secretReferences") or []
+            secret_references.update(references if not isinstance(references, dict) else references.keys())
+        document = {"public": public, "secretReferences": sorted(secret_references), "resources": resources}
+        digest = hashlib.sha256(json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return public, sorted(secret_references), resources, digest
+
+    def _upsert_shared_environment(self, spec, public, secret_references):
+        base = "https://api.vercel.com/v10/projects/" + urllib.parse.quote(spec["projectId"], safe="") + "/env"
+        query = self._team_query(spec)
+        _, response = self.client.request(base + query, authenticated=True, timeout=spec.get("timeoutSeconds", 10))
+        items = response if isinstance(response, list) else response.get("envs", [])
+        existing = {(item.get("key"), item.get("gitBranch")): item for item in items}
+        target = spec.get("target", "production")
+        rotate = set(self.configuration.get("rotateSecretReferences") or [])
+        values = [{"key": key, "value": value, "type": "encrypted", "target": [target]} for key, value in sorted(public.items())]
+        for reference in secret_references:
+            current = existing.get((reference, None))
+            installed = current and target in (current.get("target") or [])
+            if installed and reference not in rotate:
+                continue
+            values.append({"key": reference, "value": self._secret_value(reference), "type": "sensitive", "target": [target]})
+        changed = False
+        for value in values:
+            current = existing.get((value["key"], value.get("gitBranch")))
+            same = current and current.get("type") == value["type"] and set(current.get("target") or []) == set(value["target"]) and (
+                (value["type"] == "sensitive" and value["key"] not in rotate) or current.get("value") == value["value"]
+            )
+            if same:
+                continue
+            changed = True
+            if current and current.get("id"):
+                endpoint = "https://api.vercel.com/v9/projects/" + urllib.parse.quote(spec["projectId"], safe="") + "/env/" + urllib.parse.quote(current["id"], safe="") + query
+                patch = {key: item for key, item in value.items() if key != "key"} if current.get("type") == "sensitive" else value
+                self.client.request(endpoint, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="PATCH", body=patch)
+            else:
+                self.client.request(base + query, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="POST", body=value)
+        return changed
+
+    def _find_reusable_deployment(self, spec, configuration_hash):
+        key = (self._deployment_key(spec), configuration_hash)
+        if key in self.deployment_cache:
+            return self.deployment_cache[key]
+        query = {
+            "projectId": spec["projectId"], "target": spec.get("target", "production"),
+            "sha": spec["sourceCommitSha"], "limit": 20
+        }
+        team = spec.get("teamId") or self.configuration.get("teamId")
+        if team:
+            query["teamId"] = team
+        endpoint = "https://api.vercel.com/v7/deployments?" + urllib.parse.urlencode(query)
+        _, response = self.client.request(endpoint, authenticated=True, timeout=spec.get("timeoutSeconds", 10))
+        for deployment in response.get("deployments", []):
+            meta = deployment.get("meta") or {}
+            if (deployment.get("readyState") or deployment.get("state")) != "READY":
+                continue
+            if meta.get("omniseedConfigurationHash") != configuration_hash:
+                continue
+            if meta.get("omniseedSourceRepository") != spec["sourceRepository"]:
+                continue
+            deployment_id, host = deployment.get("id") or deployment.get("uid"), deployment.get("url")
+            if deployment_id and host:
+                reusable = {"id": deployment_id, "url": host}
+                self.deployment_cache[key] = reusable
+                return reusable
+        return None
+
     def apply(self, action):
         validation = self.validate(action)
         if not validation["valid"]:
             raise ProviderError("Action is invalid", "invalid_action", {"issues": validation["issues"]})
         spec, family = self._spec(action), action["family"]
+        shared = self._shared_deployment_specs(action, spec)
+        public, secret_references, resources, configuration_hash = self._deployment_configuration(shared)
         project_change, _ = self._ensure_project(spec)
-        self._upsert_environment(spec, family)
+        environment_changed = self._upsert_shared_environment(spec, public, secret_references)
+        deployment = None if environment_changed else self._find_reusable_deployment(spec, configuration_hash)
         body = {
             "name": spec["projectId"], "project": spec["projectId"], "target": spec.get("target", "production"),
             "gitSource": {"type": "github", "repoId": spec["sourceRepositoryId"], "ref": spec["sourceCommitSha"], "sha": spec["sourceCommitSha"]},
             "meta": {key: value for key, value in {
                 "omniseedFamily": family, "omniseedResourceId": action["resourceId"],
+                "omniseedResources": ",".join(resources), "omniseedConfigurationHash": configuration_hash,
                 "omniseedCompanyId": spec["expectedCompanyId"], "omniseedAgentIdentity": spec.get("agentIdentity"),
                 "omniseedSourceRepository": spec["sourceRepository"], "omniseedSourceCommit": spec["sourceCommitSha"]
             }.items() if value is not None}
         }
-        if family == "agents":
+        if any(item[0] == "agents" for item in shared):
             body["projectSettings"] = {"framework": "eve", "buildCommand": "npm run build:runtime", "outputDirectory": ".output", "nodeVersion": "24.x"}
-        endpoint = "https://api.vercel.com/v13/deployments" + self._team_query(spec)
-        _, deployment = self.client.request(endpoint, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="POST", body=body)
+        deployment_change = "reuse"
+        if deployment is None:
+            endpoint = "https://api.vercel.com/v13/deployments" + self._team_query(spec)
+            _, deployment = self.client.request(endpoint, authenticated=True, timeout=spec.get("timeoutSeconds", 10), method="POST", body=body)
+            deployment_change = "create"
         deployment_id, host = deployment.get("id") or deployment.get("uid"), deployment.get("url")
         if not deployment_id or not host:
             raise ProviderError("Vercel did not return a deployment identity", "invalid_remote_response", {"host": "api.vercel.com"})
         deployment_url = host if host.startswith("https://") else "https://" + host
         applied_spec = {**spec, "deploymentId": deployment_id, "deploymentUrl": deployment_url}
         self._wait_for_deployment(applied_spec)
+        self.deployment_cache[(self._deployment_key(spec), configuration_hash)] = {"id": deployment_id, "url": host}
         if family == "connectors":
             applied_spec["companyBindingUrl"] = spec.get("companyBindingUrl") or deployment_url.rstrip("/") + spec.get("companyBindingPath", "/api/company")
         return {
             "providerResourceId": f"vercel://{spec['projectId']}/deployments/{deployment_id}", "status": "submitted",
-            "attributes": {"family": family, "resourceId": action["resourceId"], "spec": applied_spec, "projectChange": project_change, "submittedAt": now()}
+            "attributes": {"family": family, "resourceId": action["resourceId"], "spec": applied_spec, "projectChange": project_change, "deploymentChange": deployment_change, "sharedResources": resources, "submittedAt": now()}
         }
 
     def _deployment_endpoint(self, spec):
