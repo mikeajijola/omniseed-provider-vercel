@@ -8,13 +8,14 @@ import os
 import re
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
 
 PROTOCOL = "omniseed.provider.protocol/1.0"
 PROVIDER_ID = "vercel"
-VERSION = "0.2.0-alpha.7"
+VERSION = "0.2.0-alpha.8"
 FAMILIES = ["agents", "connectors"]
 METHODS = [
     "provider.initialize", "provider.status", "provider.validate", "provider.plan",
@@ -714,6 +715,20 @@ def respond(request_id, result=None, error=None):
     sys.stdout.flush()
 
 
+def internal_error(error):
+    """Return actionable diagnostics without serialising exception values or locals."""
+    frames = traceback.extract_tb(error.__traceback__)[-4:]
+    return {
+        "code": -32603,
+        "message": "Provider encountered an unexpected internal error",
+        "data": {
+            "code": "provider_internal_error",
+            "exceptionType": type(error).__name__,
+            "frames": [{"function": frame.name, "line": frame.lineno} for frame in frames]
+        }
+    }
+
+
 def main():
     provider = VercelProvider()
     for line in sys.stdin:
@@ -735,6 +750,8 @@ def main():
                 if method == "provider.shutdown": break
             except ProviderError as error:
                 respond(request_id, error={"code": -32010, "message": str(error), "data": {"code": error.code, **error.details}})
+            except Exception as error:
+                respond(request_id, error=internal_error(error))
         except json.JSONDecodeError:
             respond(None, error={"code": -32700, "message": "Parse error"})
 
