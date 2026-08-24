@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from provider.vercel_provider import PROTOCOL, ProviderError, VercelProvider
+from provider.vercel_provider import PROTOCOL, internal_error, ProviderError, VercelProvider
 
 SHA = "a" * 40
 BASE = {"projectId": "lily-production", "sourceRepository": "mikeajijola/omniseed-lily", "sourceRepositoryId": 123456, "sourceCommitSha": SHA, "expectedCompanyId": "omniseed_ecosystem", "expectedEnvironment": "production", "target": "production"}
@@ -113,6 +113,17 @@ class ProviderTests(unittest.TestCase):
         provider = VercelProvider({"runtimeAuthTokenEnv": "EVE_RUNTIME_TOKEN", **(configuration or {})}, client or FakeClient())
         provider.company_id = "omniseed_ecosystem"
         return provider
+
+    def test_unexpected_internal_diagnostics_fail_closed_without_exception_values(self):
+        try:
+            raise TypeError("secret-value-must-not-leak")
+        except TypeError as error:
+            diagnostic = internal_error(error)
+        payload = json.dumps(diagnostic)
+        self.assertEqual(diagnostic["data"]["code"], "provider_internal_error")
+        self.assertEqual(diagnostic["data"]["exceptionType"], "TypeError")
+        self.assertNotIn("secret-value-must-not-leak", payload)
+        self.assertTrue(diagnostic["data"]["frames"])
 
     def test_manifest_and_runtime_advertise_one_provider_for_both_families(self):
         result = self.provider().initialize({"protocolVersion": PROTOCOL, "configuration": {}, "context": {"companyId": "omniseed_ecosystem"}})
