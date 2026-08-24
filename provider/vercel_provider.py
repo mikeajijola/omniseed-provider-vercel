@@ -592,7 +592,10 @@ class VercelProvider:
                 "omniseedSourceRepository": spec["sourceRepository"], "omniseedSourceCommit": spec["sourceCommitSha"]
             }.items() if value is not None}
         }
-        if any(item[0] == "agents" for item in shared):
+        shared_families = {item[0] for item in shared}
+        if {"agents", "connectors"}.issubset(shared_families):
+            body["projectSettings"] = {"framework": None, "buildCommand": "npm run build:vercel", "nodeVersion": "24.x"}
+        elif "agents" in shared_families:
             body["projectSettings"] = {"framework": "eve", "buildCommand": "npm run build:runtime", "outputDirectory": ".output", "nodeVersion": "24.x"}
         deployment_change = "reuse"
         if deployment is None:

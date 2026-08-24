@@ -201,7 +201,9 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(lily["providerResourceId"], interface["providerResourceId"])
         self.assertEqual(lily["attributes"]["sharedResources"], ["agents:lily", "connectors:omniseed_os"])
         self.assertEqual(interface["attributes"]["deploymentChange"], "reuse")
-        self.assertEqual(deployments[0]["body"]["projectSettings"]["framework"], "eve")
+        self.assertIsNone(deployments[0]["body"]["projectSettings"]["framework"])
+        self.assertEqual(deployments[0]["body"]["projectSettings"]["buildCommand"], "npm run build:vercel")
+        self.assertNotIn("outputDirectory", deployments[0]["body"]["projectSettings"])
         environment_keys = {item["key"] for item in client.existing_env}
         self.assertTrue({"LILY_MODEL", "OMNISEED_COMPANY_DEFINITION_URL", "OMNISEED_STEWARD_ACTOR_ID"}.issubset(environment_keys))
 
