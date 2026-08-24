@@ -31,6 +31,12 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def evidence_id(family, resource_id, deployment_id, evidence_type):
+    """Stable reference for one observed fact about one immutable deployment."""
+    material = json.dumps([PROVIDER_ID, family, resource_id, deployment_id, evidence_type], separators=(",", ":"))
+    return f"vercel_{hashlib.sha256(material.encode('utf-8')).hexdigest()[:24]}"
+
+
 class ProviderError(RuntimeError):
     def __init__(self, message, code="provider_error", details=None):
         super().__init__(message)
@@ -656,10 +662,11 @@ class VercelProvider:
     def observe(self, resource):
         attributes = resource.get("attributes") or {}
         spec, family = attributes.get("spec") or resource.get("spec") or {}, attributes.get("family") or resource.get("family")
+        resource_id = resource.get("id")
         deployment, source = self._deployment_snapshot(spec)
         checked_at, state = now(), deployment.get("readyState") or deployment.get("state")
         deployment_ok = state == "READY" and source["sourceMatches"]
-        evidence = [{"type": "vercel_api_response", "source": PROVIDER_ID, "projectId": spec["projectId"], "deploymentId": spec["deploymentId"], "state": state, **source, "observedAt": checked_at}]
+        evidence = [{"id": evidence_id(family, resource_id, spec["deploymentId"], "vercel_api_response"), "type": "vercel_api_response", "source": PROVIDER_ID, "projectId": spec["projectId"], "deploymentId": spec["deploymentId"], "state": state, **source, "observedAt": checked_at}]
         snapshot = {"projectId": spec["projectId"], "deploymentId": spec["deploymentId"], "deploymentUrl": spec["deploymentUrl"], "deploymentState": state, "deploymentReady": state == "READY", **source}
         if family == "agents":
             health, info = self._eve(spec).health(), self._eve(spec).info()
@@ -672,7 +679,7 @@ class VercelProvider:
             runtime_matches = runtime_company == spec["expectedCompanyId"] and runtime_identity == spec["agentIdentity"] and runtime_environment == spec["expectedEnvironment"] and runtime_source.get("repository") == implementation_repository and runtime_source.get("commitSha") == implementation_commit
             healthy = deployment_ok and health.get("ok") is True and runtime_matches
             snapshot.update({"health": health, "runtime": info, "runtimeIdentityMatches": runtime_matches})
-            evidence.append({"type": "eve_agent_runtime_health", "source": PROVIDER_ID, "product": "eve", "deploymentId": spec["deploymentId"], "health": health, "runtime": info, "matchesDesired": runtime_matches, "observedAt": checked_at})
+            evidence.append({"id": evidence_id(family, resource_id, spec["deploymentId"], "eve_agent_runtime_health"), "type": "eve_agent_runtime_health", "source": PROVIDER_ID, "product": "eve", "deploymentId": spec["deploymentId"], "health": health, "runtime": info, "matchesDesired": runtime_matches, "observedAt": checked_at})
         elif family == "connectors":
             _, binding = self.client.json_request(spec["companyBindingUrl"], timeout=spec.get("timeoutSeconds", 10))
             instance = binding.get("instance") or {}
@@ -685,7 +692,7 @@ class VercelProvider:
             binding_matches = actual_company == spec["expectedCompanyId"] and repository == spec["expectedRepository"] and environment == expected_environment and desired_revision == spec.get("desiredRevision")
             healthy = deployment_ok and binding_matches
             snapshot.update({"companyId": actual_company, "canonicalRepository": repository, "desiredRevision": desired_revision, "environment": environment, "companyBindingMatches": binding_matches})
-            evidence.append({"type": "http_company_binding", "source": PROVIDER_ID, "url": spec["companyBindingUrl"], "companyId": actual_company, "canonicalRepository": repository, "desiredRevision": desired_revision, "environment": environment, "matchesDesired": binding_matches, "observedAt": checked_at})
+            evidence.append({"id": evidence_id(family, resource_id, spec["deploymentId"], "http_company_binding"), "type": "http_company_binding", "source": PROVIDER_ID, "url": spec["companyBindingUrl"], "companyId": actual_company, "canonicalRepository": repository, "desiredRevision": desired_revision, "environment": environment, "matchesDesired": binding_matches, "observedAt": checked_at})
         else:
             raise ProviderError("Persisted resource family is unsupported", "unsupported_family", {"family": family})
         return {"status": "healthy" if healthy else "degraded", "checkedAt": checked_at, "providerResourceId": f"vercel://{spec['projectId']}/deployments/{spec['deploymentId']}", "evidence": evidence, "snapshot": snapshot}
