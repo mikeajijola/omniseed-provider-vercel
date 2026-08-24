@@ -210,6 +210,7 @@ class VercelProvider:
                 "sourceCommitSha": source.get("revision"),
                 "agentImplementationRepository": self._repository(implementation.get("repository")),
                 "agentImplementationCommitSha": implementation.get("revision"),
+                "runtimeModel": implementation.get("model"),
                 "expectedCompanyId": bootstrap.get("company"),
                 "expectedEnvironment": runtime.get("environment"),
                 "agentIdentity": raw.get("organisationalIdentity") or bootstrap.get("identity"),
@@ -261,7 +262,7 @@ class VercelProvider:
         issues = []
         common = ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "expectedCompanyId", "expectedEnvironment"]
         family_fields = {
-            "agents": ["agentIdentity", "agentImplementationRepository", "agentImplementationCommitSha", "secretReferences", "observationCredentialReference", "healthPath", "infoPath", "operationEndpoint", "operationCredentialReference", "sessionCredentialReference", "sessionIssuer", "sessionAudience"],
+            "agents": ["agentIdentity", "agentImplementationRepository", "agentImplementationCommitSha", "runtimeModel", "secretReferences", "observationCredentialReference", "healthPath", "infoPath", "operationEndpoint", "operationCredentialReference", "sessionCredentialReference", "sessionIssuer", "sessionAudience"],
             "connectors": ["expectedRepository", "desiredRevision", "companyDefinitionPath", "stewardActorId"]
         }
         if family == "connectors" and not spec.get("readOnlyInspection"):
@@ -390,6 +391,7 @@ class VercelProvider:
             "OMNISEED_ENVIRONMENT": spec["expectedEnvironment"],
             "OMNISEED_SOURCE_REPOSITORY": spec.get("agentImplementationRepository") or spec["sourceRepository"],
             "OMNISEED_SOURCE_COMMIT_SHA": spec.get("agentImplementationCommitSha") or spec["sourceCommitSha"],
+            "LILY_MODEL": spec["runtimeModel"],
             "OMNISEED_OPERATION_ENDPOINT": spec["operationEndpoint"],
             "OMNISEED_OPERATION_CREDENTIAL_ENV": spec["operationCredentialReference"],
             "OMNISEED_SESSION_CREDENTIAL_ENV": spec["sessionCredentialReference"],

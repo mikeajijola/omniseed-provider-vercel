@@ -11,12 +11,12 @@ from provider.vercel_provider import PROTOCOL, ProviderError, VercelProvider
 
 SHA = "a" * 40
 BASE = {"projectId": "lily-production", "sourceRepository": "mikeajijola/omniseed-lily", "sourceRepositoryId": 123456, "sourceCommitSha": SHA, "expectedCompanyId": "omniseed_ecosystem", "expectedEnvironment": "production", "target": "production"}
-AGENT = {**BASE, "agentIdentity": "lily", "secretReferences": ["OMNISEED_OPERATION_TOKEN", "EVE_MODEL_TOKEN", "LILY_SESSION_JWT_SECRET"], "observationCredentialReference": "EVE_MODEL_TOKEN", "healthPath": "/eve/v1/health", "infoPath": "/eve/v1/info", "operationEndpoint": "https://omniseed-os.vercel.app", "operationCredentialReference": "OMNISEED_OPERATION_TOKEN", "sessionCredentialReference": "LILY_SESSION_JWT_SECRET", "sessionIssuer": "omniseed", "sessionAudience": "omniseed-lily"}
+AGENT = {**BASE, "agentIdentity": "lily", "runtimeModel": "nvidia/nemotron-3.5-lightning-free", "secretReferences": ["OMNISEED_OPERATION_TOKEN", "EVE_MODEL_TOKEN", "LILY_SESSION_JWT_SECRET"], "observationCredentialReference": "EVE_MODEL_TOKEN", "healthPath": "/eve/v1/health", "infoPath": "/eve/v1/info", "operationEndpoint": "https://omniseed-os.vercel.app", "operationCredentialReference": "OMNISEED_OPERATION_TOKEN", "sessionCredentialReference": "LILY_SESSION_JWT_SECRET", "sessionIssuer": "omniseed", "sessionAudience": "omniseed-lily"}
 CONNECTOR = {**BASE, "sourceRepository": "mikeajijola/omniseedos", "expectedRepository": "mikeajijola/omniseed-ecosystem-company", "desiredRevision": "b" * 40, "companyDefinitionPath": "omniform.yaml", "stewardActorId": "lily", "readOnlyInspection": True}
 CANONICAL_AGENT = {
     "kind": "ai_agent", "organisationalIdentity": "lily",
     "bootstrap": {"company": "omniseed_ecosystem", "identity": "lily", "omniseedEndpoint": "https://omniseed-os.vercel.app", "credentialReference": "OMNISEED_OPERATION_TOKEN"},
-    "implementation": {"framework": "eve", "repository": "https://github.com/mikeajijola/omniseed-lily.git", "repositoryId": 123456, "revision": SHA},
+    "implementation": {"framework": "eve", "model": "nvidia/nemotron-3.5-lightning-free", "repository": "https://github.com/mikeajijola/omniseed-lily.git", "repositoryId": 123456, "revision": SHA},
     "runtime": {"project": "lily-production", "environment": "production", "provider": "vercel", "secretReferences": ["OMNISEED_OPERATION_TOKEN", "LILY_RUNTIME_OBSERVATION_TOKEN", "LILY_SESSION_JWT_SECRET"], "observationCredentialReference": "LILY_RUNTIME_OBSERVATION_TOKEN", "session": {"credentialReference": "LILY_SESSION_JWT_SECRET", "issuer": "omniseed", "audience": "omniseed-lily"}, "expectedEndpoints": {"health": "https://omniseed-lily.vercel.app/health", "info": "https://omniseed-lily.vercel.app/info", "operation": "https://omniseed-lily.vercel.app/eve/v1/session"}}
 }
 CANONICAL_CONNECTOR = {
@@ -135,6 +135,7 @@ class ProviderTests(unittest.TestCase):
         environment = self.provider()._public_environment(normalized, "agents")
         self.assertEqual(environment["OMNISEED_SOURCE_REPOSITORY"], "mikeajijola/omniseed-lily")
         self.assertEqual(environment["OMNISEED_SOURCE_COMMIT_SHA"], SHA)
+        self.assertEqual(environment["LILY_MODEL"], "nvidia/nemotron-3.5-lightning-free")
 
     def test_plan_reports_create_or_reuse_exact_revision_bindings_and_evidence(self):
         reused = self.provider().plan(action())
@@ -148,7 +149,7 @@ class ProviderTests(unittest.TestCase):
             "OMNISEED_OPERATION_CREDENTIAL_ENV", "OMNISEED_OPERATION_ENDPOINT",
             "OMNISEED_SESSION_CREDENTIAL_ENV", "OMNISEED_SESSION_JWT_AUDIENCE",
             "OMNISEED_SESSION_JWT_ISSUER", "OMNISEED_SOURCE_COMMIT_SHA",
-            "OMNISEED_SOURCE_REPOSITORY"
+            "OMNISEED_SOURCE_REPOSITORY", "LILY_MODEL"
         ]))
         self.assertIn("eve_agent_runtime_health", reused["expectedEvidence"])
 
