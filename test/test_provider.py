@@ -48,12 +48,13 @@ def shared_actions():
 
 class FakeClient:
     token = "vercel-secret-must-not-leak"
-    def __init__(self, project_exists=True, state="READY", runtime=None, commit=SHA, fail_deploy=False, existing_env=None, deployments=None):
+    def __init__(self, project_exists=True, state="READY", runtime=None, commit=SHA, fail_deploy=False, existing_env=None, deployments=None, stale_environment_reads=False):
         self.project_exists, self.state, self.commit, self.fail_deploy = project_exists, state, commit, fail_deploy
         self.runtime = runtime or {"companyRef": "omniseed_ecosystem", "agentIdentity": "lily", "environment": "production", "source": {"repository": "mikeajijola/omniseed-lily", "commitSha": SHA}, "agent": {"framework": "eve"}}
         self.requests = []
         self.existing_env = existing_env or []
         self.deployments = deployments or []
+        self.stale_environment_reads = stale_environment_reads
         self.states = list(state) if isinstance(state, (list, tuple)) else None
         self.deployment_source = None
 
@@ -62,7 +63,7 @@ class FakeClient:
         if url.endswith("/v2/user"):
             return 200, {"user": {"id": "user_1"}}
         if "/v10/projects/" in url and url.split("?")[0].endswith("/env"):
-            if method == "GET": return 200, {"envs": self.existing_env}
+            if method == "GET": return 200, {"envs": [] if self.stale_environment_reads else self.existing_env}
             if method == "POST":
                 self.existing_env.append({"id": f"env_{len(self.existing_env) + 1}", **body})
                 return 200, {"created": True}
@@ -203,6 +204,28 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(deployments[0]["body"]["projectSettings"]["framework"], "eve")
         environment_keys = {item["key"] for item in client.existing_env}
         self.assertTrue({"LILY_MODEL", "OMNISEED_COMPANY_DEFINITION_URL", "OMNISEED_STEWARD_ACTOR_ID"}.issubset(environment_keys))
+
+    @patch.dict(os.environ, {
+        "OMNISEED_OPERATION_TOKEN": "operation-secret", "LILY_RUNTIME_OBSERVATION_TOKEN": "observation-secret",
+        "LILY_SESSION_JWT_SECRET": "session-secret"
+    })
+    def test_transaction_reuses_exact_deployment_when_environment_reads_are_stale(self):
+        agent, connector = shared_actions()
+        client = FakeClient(stale_environment_reads=True)
+        provider = self.provider(client)
+        provider.initialize({
+            "protocolVersion": PROTOCOL, "configuration": {},
+            "context": {"companyId": "omniseed_ecosystem", "desiredResources": [
+                {"family": "agents", "id": "lily", "spec": agent["desired"]["spec"]},
+                {"family": "connectors", "id": "omniseed_os", "spec": connector["desired"]["spec"]}
+            ]}
+        })
+        lily = provider.apply(agent)
+        interface = provider.apply(connector)
+        deployments = [request for request in client.requests if request["method"] == "POST" and "/v13/deployments" in request["url"]]
+        self.assertEqual(len(deployments), 1)
+        self.assertEqual(interface["providerResourceId"], lily["providerResourceId"])
+        self.assertEqual(interface["attributes"]["deploymentChange"], "reuse")
 
     @patch.dict(os.environ, {
         "OMNISEED_OPERATION_TOKEN": "operation-secret", "LILY_RUNTIME_OBSERVATION_TOKEN": "observation-secret",
