@@ -5,6 +5,8 @@ This is the single Provider package for the supplying organisation Vercel, with 
 - `agents` maps to Eve, Vercel Functions, and AI Gateway.
 - `connectors` maps to Vercel Functions and deployment services.
 
+This package does not advertise the `inference` primitive family. The existing `LILY_MODEL`/AI Gateway fields are compatibility inputs for the currently deployed Eve Agent runtime; they do not prove a separately provisioned inference binding. A company selecting Google Gemini directly must declare a Google-supplied inference Resource and observe it through the Google Provider while Vercel remains responsible only for hosting the Agent runtime. Removing these compatibility inputs requires a coordinated runtime and company migration rather than silently reclassifying them.
+
 Provider configuration contains only organisation-wide Vercel team/authentication settings and optional mappings from desired-state secret-reference names to server environment names. Resource deployment intent is derived directly from the selected canonical Omniform resource: project identity, numeric Vercel Git integration repository ID, full commit SHA, company and Agent identities, the model selected beneath the Eve implementation, environment, expected endpoints, and secret-reference names. The Provider provisions that declared model as `LILY_MODEL`; a dashboard-only model choice is not a second desired-state input. There is no second flat or hidden deployment definition.
 
 When `statusProjectId` is configured, Provider connection status is established
