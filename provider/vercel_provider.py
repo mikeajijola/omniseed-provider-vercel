@@ -477,8 +477,7 @@ class VercelProvider:
             issues.append({"code": "runtime_adapter_missing", "field": "interactionProtocol", "message": "No installed adapter supports the declared interaction protocol"})
         if family == "agents":
             mapping = spec.get("runtimeEnvironmentMapping") or {}
-            secret_references = spec.get("secretReferences") or []
-            secret_names = set(secret_references if not isinstance(secret_references, dict) else secret_references.keys())
+            secret_names = self._shared_deployment_secret_names(action, spec)
             if not isinstance(mapping, dict):
                 issues.append({"code": "invalid_environment_mapping", "field": "runtimeEnvironmentMapping", "message": "Runtime environment mapping must be an object"})
                 mapping = {}
@@ -492,7 +491,7 @@ class VercelProvider:
                 if destinations.count(environment_name) > 1:
                     issues.append({"code": "environment_mapping_conflict", "field": "runtimeEnvironmentMapping", "message": "Runtime fields must map to unique environment names"})
                 if environment_name in secret_names:
-                    issues.append({"code": "environment_secret_conflict", "field": "runtimeEnvironmentMapping", "message": "A public runtime field cannot overwrite a secret reference"})
+                    issues.append({"code": "environment_secret_conflict", "field": "runtimeEnvironmentMapping", "message": "A public runtime field cannot overwrite a secret reference in the shared deployment"})
         if family == "agents" and spec.get("interactionCredentialReference") and spec.get("interactionCredentialReference") not in (spec.get("secretReferences") or []):
             issues.append({"code": "missing_secret_reference", "field": "interactionCredentialReference", "message": "The interaction credential must be included in secretReferences"})
         return issues
@@ -636,23 +635,47 @@ class VercelProvider:
             spec.get("target", "production")
         )
 
+    @staticmethod
+    def _secret_reference_names(spec):
+        references = spec.get("secretReferences") or []
+        return set(references if not isinstance(references, dict) else references.keys())
+
+    @staticmethod
+    def _declares_deployment(resource):
+        family = resource.get("family")
+        raw = resource.get("spec") or {}
+        if family == "agents":
+            runtime = raw.get("runtime") if isinstance(raw.get("runtime"), dict) else {}
+            source = runtime.get("source") if isinstance(runtime.get("source"), dict) else {}
+            return bool(runtime.get("project") and source.get("repositoryId") and source.get("revision"))
+        if family == "connectors":
+            source = raw.get("source") if isinstance(raw.get("source"), dict) else {}
+            return bool(raw.get("project") and source.get("repositoryId") and source.get("revision"))
+        return False
+
+    def _shared_deployment_secret_names(self, action, spec):
+        """Collect secret names from every declared resource on this deployment."""
+        names = self._secret_reference_names(spec)
+        for resource in self.desired_resources:
+            if not self._declares_deployment(resource):
+                continue
+            family = resource.get("family")
+            candidate = self._spec({
+                "family": family, "resourceId": resource.get("id"),
+                "desired": {"spec": resource.get("spec") or {}}
+            })
+            if self._deployment_key(candidate) == self._deployment_key(spec):
+                names.update(self._secret_reference_names(candidate))
+        return names
+
     def _shared_deployment_specs(self, action, spec):
         """Resolve approved Provider resources sharing one immutable deployment."""
         matches = []
         for resource in self.desired_resources:
+            if not self._declares_deployment(resource):
+                continue
             family = resource.get("family")
             raw = resource.get("spec") or {}
-            if family == "agents":
-                runtime = raw.get("runtime") if isinstance(raw.get("runtime"), dict) else {}
-                source = runtime.get("source") if isinstance(runtime.get("source"), dict) else {}
-                if not runtime.get("project") or not source.get("repositoryId") or not source.get("revision"):
-                    continue
-            elif family == "connectors":
-                source = raw.get("source") if isinstance(raw.get("source"), dict) else {}
-                if not raw.get("project") or not source.get("repositoryId") or not source.get("revision"):
-                    continue
-            else:
-                continue
             candidate_action = {
                 "family": family, "resourceId": resource.get("id"),
                 "desired": {"spec": raw}
@@ -691,6 +714,12 @@ class VercelProvider:
                 public[key] = value
             references = spec.get("secretReferences") or []
             secret_references.update(references if not isinstance(references, dict) else references.keys())
+        conflicts = sorted(set(public).intersection(secret_references))
+        if conflicts:
+            raise ProviderError(
+                "A public environment value cannot overwrite a shared deployment secret reference",
+                "environment_secret_conflict", {"key": conflicts[0]}
+            )
         document = {"public": public, "secretReferences": sorted(secret_references), "resources": resources, "agentRuntimes": runtimes}
         digest = hashlib.sha256(json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         return public, sorted(secret_references), resources, digest

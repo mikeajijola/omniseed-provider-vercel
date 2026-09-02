@@ -229,6 +229,38 @@ class ProviderTests(unittest.TestCase):
             self.provider().apply(action("agents", desired))
         self.assertEqual(raised.exception.code, "invalid_action")
 
+    def test_runtime_environment_mapping_cannot_overwrite_another_shared_resources_secret(self):
+        agent, connector = shared_actions()
+        agent["desired"]["spec"]["runtime"]["environmentMapping"] = {"identity": "SHARED_NAME"}
+        connector["desired"]["spec"]["secretReferences"] = ["SHARED_NAME"]
+        existing_secret = {"id": "env_shared", "key": "SHARED_NAME", "type": "sensitive", "target": ["production"]}
+        client = FakeClient(existing_env=[existing_secret])
+        provider = self.provider(client)
+        provider.initialize({
+            "protocolVersion": PROTOCOL, "configuration": {},
+            "context": {"companyId": "omniseed_ecosystem", "desiredResources": [
+                {"family": "agents", "id": "lily", "spec": agent["desired"]["spec"]},
+                {"family": "connectors", "id": "omniseed_os", "spec": connector["desired"]["spec"]}
+            ]}
+        })
+
+        validation = provider.validate(agent)
+        self.assertFalse(validation["valid"])
+        self.assertIn("environment_secret_conflict", [item["code"] for item in validation["issues"]])
+        with self.assertRaises(ProviderError) as raised:
+            provider.apply(agent)
+        self.assertEqual(raised.exception.code, "invalid_action")
+        self.assertEqual(client.existing_env, [existing_secret])
+        self.assertFalse(any(request["method"] in ("PATCH", "POST") for request in client.requests))
+
+        shared = [
+            ("agents", "lily", provider._spec(agent)),
+            ("connectors", "omniseed_os", provider._spec(connector)),
+        ]
+        with self.assertRaises(ProviderError) as defense:
+            provider._deployment_configuration(shared)
+        self.assertEqual(defense.exception.code, "environment_secret_conflict")
+
     def test_nondeployment_connector_is_not_misread_as_a_shared_deployment(self):
         operation = action("connectors", {"companyBinding": "omniseed_ecosystem", "endpoint": "https://omniseed.example"}, "omniseed_operations")
         normalized = self.provider()._spec(operation)
