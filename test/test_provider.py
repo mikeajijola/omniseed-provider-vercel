@@ -375,6 +375,59 @@ class ProviderTests(unittest.TestCase):
         "OMNISEED_OPERATION_TOKEN": "operation-secret", "LILY_RUNTIME_OBSERVATION_TOKEN": "observation-secret",
         "LILY_SESSION_JWT_SECRET": "session-secret"
     })
+    def test_shared_agents_with_matching_runtime_builds_create_one_deployment(self):
+        agent, _ = shared_actions()
+        peer = copy.deepcopy(agent)
+        peer["resourceId"] = "lily_peer"
+        client = FakeClient()
+        provider = self.provider(client)
+        provider.initialize({
+            "protocolVersion": PROTOCOL, "configuration": {},
+            "context": {"companyId": "omniseed_ecosystem", "desiredResources": [
+                {"family": "agents", "id": "lily", "spec": agent["desired"]["spec"]},
+                {"family": "agents", "id": "lily_peer", "spec": peer["desired"]["spec"]}
+            ]}
+        })
+
+        applied = provider.apply(agent)
+
+        deployments = [request for request in client.requests if request["method"] == "POST" and "/v13/deployments" in request["url"]]
+        self.assertEqual(len(deployments), 1)
+        self.assertEqual(applied["attributes"]["sharedResources"], ["agents:lily", "agents:lily_peer"])
+        self.assertEqual(deployments[0]["body"]["projectSettings"], {
+            "framework": "eve", "buildCommand": "npm run build:runtime",
+            "outputDirectory": ".output", "nodeVersion": "24.x"
+        })
+
+    @patch.dict(os.environ, {
+        "OMNISEED_OPERATION_TOKEN": "operation-secret", "LILY_RUNTIME_OBSERVATION_TOKEN": "observation-secret",
+        "LILY_SESSION_JWT_SECRET": "session-secret"
+    })
+    def test_shared_agents_with_conflicting_runtime_builds_are_rejected(self):
+        agent, _ = shared_actions()
+        peer = copy.deepcopy(agent)
+        peer["resourceId"] = "lily_peer"
+        peer["desired"]["spec"]["runtime"]["build"] = {"buildCommand": "npm run build:peer"}
+        client = FakeClient()
+        provider = self.provider(client)
+        provider.initialize({
+            "protocolVersion": PROTOCOL, "configuration": {},
+            "context": {"companyId": "omniseed_ecosystem", "desiredResources": [
+                {"family": "agents", "id": "lily", "spec": agent["desired"]["spec"]},
+                {"family": "agents", "id": "lily_peer", "spec": peer["desired"]["spec"]}
+            ]}
+        })
+
+        with self.assertRaises(ProviderError) as raised:
+            provider.apply(agent)
+
+        self.assertEqual(raised.exception.code, "shared_runtime_conflict")
+        self.assertFalse(any(request["method"] == "POST" and "/v13/deployments" in request["url"] for request in client.requests))
+
+    @patch.dict(os.environ, {
+        "OMNISEED_OPERATION_TOKEN": "operation-secret", "LILY_RUNTIME_OBSERVATION_TOKEN": "observation-secret",
+        "LILY_SESSION_JWT_SECRET": "session-secret"
+    })
     def test_transaction_reuses_exact_deployment_when_environment_reads_are_stale(self):
         agent, connector = shared_actions()
         client = FakeClient(stale_environment_reads=True)
