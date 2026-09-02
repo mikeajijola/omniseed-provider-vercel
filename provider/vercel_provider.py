@@ -173,6 +173,7 @@ class RuntimeAdapter:
     default_product = None
     health_evidence_type = "agent_runtime_health"
     turn_evidence_type = "agent_semantic_turn"
+    requires_interaction_credential = False
 
     def normalize(self, metadata):
         return {}
@@ -243,6 +244,7 @@ class EveRuntimeAdapter(RuntimeAdapter):
     default_product = "eve"
     health_evidence_type = "eve_agent_runtime_health"
     turn_evidence_type = "eve_agent_semantic_turn"
+    requires_interaction_credential = True
 
     def normalize(self, metadata):
         session = metadata.get("session") or {}
@@ -492,8 +494,13 @@ class VercelProvider:
                     issues.append({"code": "environment_mapping_conflict", "field": "runtimeEnvironmentMapping", "message": "Runtime fields must map to unique environment names"})
                 if environment_name in secret_names:
                     issues.append({"code": "environment_secret_conflict", "field": "runtimeEnvironmentMapping", "message": "A public runtime field cannot overwrite a secret reference in the shared deployment"})
-        if family == "agents" and spec.get("interactionCredentialReference") and spec.get("interactionCredentialReference") not in (spec.get("secretReferences") or []):
-            issues.append({"code": "missing_secret_reference", "field": "interactionCredentialReference", "message": "The interaction credential must be included in secretReferences"})
+        if family == "agents" and spec.get("interactionProtocol") in self.runtime_adapters:
+            adapter = self.runtime_adapters[spec["interactionProtocol"]]
+            credential_reference = spec.get("interactionCredentialReference")
+            if getattr(adapter, "requires_interaction_credential", False) and not credential_reference:
+                issues.append({"code": "missing_field", "field": "interactionCredentialReference", "message": "The selected interaction protocol requires an interaction credential"})
+            elif credential_reference and credential_reference not in (spec.get("secretReferences") or []):
+                issues.append({"code": "missing_secret_reference", "field": "interactionCredentialReference", "message": "The interaction credential must be included in secretReferences"})
         return issues
 
     def status(self):

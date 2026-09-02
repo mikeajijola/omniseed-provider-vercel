@@ -211,6 +211,49 @@ class ProviderTests(unittest.TestCase):
         issues = self.provider().validate(action("agents", desired))["issues"]
         self.assertIn("runtime_adapter_missing", [item["code"] for item in issues])
 
+    def test_eve_requires_declared_interaction_credential_before_mutation(self):
+        for mutation in ("missing", "undeclared"):
+            with self.subTest(mutation=mutation):
+                desired = copy.deepcopy(CANONICAL_AGENT)
+                if mutation == "missing":
+                    desired["runtime"]["session"].pop("credentialReference")
+                    expected_code = "missing_field"
+                else:
+                    desired["runtime"]["secretReferences"].remove("LILY_SESSION_JWT_SECRET")
+                    expected_code = "missing_secret_reference"
+                client = FakeClient()
+                provider = self.provider(client)
+
+                issues = provider.validate(action("agents", desired))["issues"]
+                self.assertIn(
+                    (expected_code, "interactionCredentialReference"),
+                    [(issue["code"], issue.get("field")) for issue in issues],
+                )
+                with self.assertRaises(ProviderError) as raised:
+                    provider.apply(action("agents", desired))
+                self.assertEqual(raised.exception.code, "invalid_action")
+                self.assertEqual(client.requests, [])
+
+    def test_optional_credential_adapter_allows_omission_but_rejects_undeclared_reference(self):
+        desired = copy.deepcopy(CANONICAL_AGENT)
+        desired["implementation"] = {**desired["implementation"], "framework": "custom", "product": "json-runtime"}
+        desired["runtime"].pop("session")
+        desired["runtime"]["interaction"] = {"protocol": JSON_TURN_PROTOCOL}
+        self.assertTrue(self.provider().validate(action("agents", desired))["valid"])
+
+        desired["runtime"]["interaction"]["credentialReference"] = "JSON_TURN_CREDENTIAL"
+        client = FakeClient()
+        provider = self.provider(client)
+        issues = provider.validate(action("agents", desired))["issues"]
+        self.assertIn(
+            ("missing_secret_reference", "interactionCredentialReference"),
+            [(issue["code"], issue.get("field")) for issue in issues],
+        )
+        with self.assertRaises(ProviderError) as raised:
+            provider.apply(action("agents", desired))
+        self.assertEqual(raised.exception.code, "invalid_action")
+        self.assertEqual(client.requests, [])
+
     def test_runtime_environment_mapping_cannot_overwrite_secrets_or_alias_fields(self):
         desired = copy.deepcopy(CANONICAL_AGENT)
         desired["runtime"]["environmentMapping"] = {

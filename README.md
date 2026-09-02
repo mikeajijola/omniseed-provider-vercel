@@ -15,7 +15,12 @@ Agent declarations select an installed runtime adapter with
 `implementation.product`. Adapters own environment mapping, Vercel build
 settings, health/info parsing, invocation, and evidence types. The built-in
 `eve.session/1` adapter preserves Lily's existing paths, audience, environment
-names (including `LILY_MODEL`), and evidence types. The built-in
+names (including `LILY_MODEL`), evidence types, and fail-closed requirement for
+an interaction credential declared in `runtime.secretReferences`. Runtime
+adapters declare whether that credential is required, so replaceable adapters
+may support optional credentials without weakening protocols that require one.
+When an optional adapter supplies a credential reference, it must likewise be
+present in `runtime.secretReferences`. The built-in
 `omniseed.agent.json-turn/1` adapter demonstrates a non-Eve JSON interaction;
 its declaration supplies `runtime.environmentMapping` and optional
 `runtime.build` settings. Unknown protocols fail as `runtime_adapter_missing`.
