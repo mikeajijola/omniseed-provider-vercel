@@ -28,6 +28,12 @@ OPERATIONS = [
 
 EVE_PROTOCOL = "eve.session/1"
 JSON_TURN_PROTOCOL = "omniseed.agent.json-turn/1"
+RUNTIME_ENVIRONMENT_FIELDS = {
+    "company", "identity", "environment", "sourceRepository", "sourceCommitSha",
+    "model", "operationEndpoint", "operationCredentialReference",
+    "sessionCredentialReference", "sessionIssuer", "sessionAudience", "product", "protocol"
+}
+ENVIRONMENT_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 def now():
@@ -173,6 +179,8 @@ class RuntimeAdapter:
 
     def public_environment(self, spec):
         mapping = spec.get("runtimeEnvironmentMapping") or {}
+        if not isinstance(mapping, dict):
+            return {}
         values = {
             "company": spec.get("expectedCompanyId"), "identity": spec.get("agentIdentity"),
             "environment": spec.get("expectedEnvironment"), "sourceRepository": spec.get("agentImplementationRepository"),
@@ -238,6 +246,9 @@ class EveRuntimeAdapter(RuntimeAdapter):
 
     def normalize(self, metadata):
         session = metadata.get("session") or {}
+        custom_mapping = metadata.get("environmentMapping") or {}
+        if not isinstance(custom_mapping, dict):
+            return {"runtimeEnvironmentMapping": custom_mapping}
         return {
             "interactionCredentialReference": session.get("credentialReference"),
             "interactionIssuer": session.get("issuer", "omniseed"),
@@ -250,7 +261,7 @@ class EveRuntimeAdapter(RuntimeAdapter):
                 "operationCredentialReference": "OMNISEED_OPERATION_CREDENTIAL_ENV",
                 "sessionCredentialReference": "OMNISEED_SESSION_CREDENTIAL_ENV",
                 "sessionIssuer": "OMNISEED_SESSION_JWT_ISSUER", "sessionAudience": "OMNISEED_SESSION_JWT_AUDIENCE",
-                **(metadata.get("environmentMapping") or {})
+                **custom_mapping
             }
         }
 
@@ -464,6 +475,24 @@ class VercelProvider:
             issues.append({"code": "caller_runtime_forbidden", "field": "runtimeUrl", "message": "Runtime URL must come from Vercel deployment state"})
         if family == "agents" and spec.get("interactionProtocol") not in self.runtime_adapters:
             issues.append({"code": "runtime_adapter_missing", "field": "interactionProtocol", "message": "No installed adapter supports the declared interaction protocol"})
+        if family == "agents":
+            mapping = spec.get("runtimeEnvironmentMapping") or {}
+            secret_references = spec.get("secretReferences") or []
+            secret_names = set(secret_references if not isinstance(secret_references, dict) else secret_references.keys())
+            if not isinstance(mapping, dict):
+                issues.append({"code": "invalid_environment_mapping", "field": "runtimeEnvironmentMapping", "message": "Runtime environment mapping must be an object"})
+                mapping = {}
+            destinations = [value for value in mapping.values() if isinstance(value, str) and value]
+            for field, environment_name in mapping.items():
+                if field not in RUNTIME_ENVIRONMENT_FIELDS:
+                    issues.append({"code": "invalid_environment_mapping", "field": f"runtimeEnvironmentMapping.{field}", "message": "The runtime environment field is not supported"})
+                if not isinstance(environment_name, str) or not ENVIRONMENT_NAME.fullmatch(environment_name):
+                    issues.append({"code": "invalid_environment_mapping", "field": f"runtimeEnvironmentMapping.{field}", "message": "Runtime environment names must use uppercase letters, numbers, and underscores"})
+            for environment_name in sorted(set(destinations)):
+                if destinations.count(environment_name) > 1:
+                    issues.append({"code": "environment_mapping_conflict", "field": "runtimeEnvironmentMapping", "message": "Runtime fields must map to unique environment names"})
+                if environment_name in secret_names:
+                    issues.append({"code": "environment_secret_conflict", "field": "runtimeEnvironmentMapping", "message": "A public runtime field cannot overwrite a secret reference"})
         if family == "agents" and spec.get("interactionCredentialReference") and spec.get("interactionCredentialReference") not in (spec.get("secretReferences") or []):
             issues.append({"code": "missing_secret_reference", "field": "interactionCredentialReference", "message": "The interaction credential must be included in secretReferences"})
         return issues

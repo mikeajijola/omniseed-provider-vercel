@@ -211,6 +211,24 @@ class ProviderTests(unittest.TestCase):
         issues = self.provider().validate(action("agents", desired))["issues"]
         self.assertIn("runtime_adapter_missing", [item["code"] for item in issues])
 
+    def test_runtime_environment_mapping_cannot_overwrite_secrets_or_alias_fields(self):
+        desired = copy.deepcopy(CANONICAL_AGENT)
+        desired["runtime"]["environmentMapping"] = {
+            "company": "LILY_SESSION_JWT_SECRET",
+            "identity": "SHARED_RUNTIME_VALUE",
+            "environment": "SHARED_RUNTIME_VALUE",
+            "unsupported": "lowercase-name",
+        }
+        issues = self.provider().validate(action("agents", desired))["issues"]
+        codes = [item["code"] for item in issues]
+        self.assertIn("environment_secret_conflict", codes)
+        self.assertIn("environment_mapping_conflict", codes)
+        self.assertEqual(codes.count("invalid_environment_mapping"), 2)
+
+        with self.assertRaises(ProviderError) as raised:
+            self.provider().apply(action("agents", desired))
+        self.assertEqual(raised.exception.code, "invalid_action")
+
     def test_nondeployment_connector_is_not_misread_as_a_shared_deployment(self):
         operation = action("connectors", {"companyBinding": "omniseed_ecosystem", "endpoint": "https://omniseed.example"}, "omniseed_operations")
         normalized = self.provider()._spec(operation)
