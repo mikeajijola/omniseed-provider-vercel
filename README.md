@@ -2,12 +2,31 @@
 
 This is the single Provider package for the supplying organisation Vercel, with canonical Provider ID `vercel`.
 
-- `agents` maps to Eve, Vercel Functions, and AI Gateway.
+- `agents` maps to declared Agent products hosted with Vercel Functions. Eve is
+  the compatibility product, not the agents-family contract.
 - `connectors` maps to Vercel Functions and deployment services.
 
-This package does not advertise the `inference` primitive family. The existing `LILY_MODEL`/AI Gateway fields are compatibility inputs for the currently deployed Eve Agent runtime; they do not prove a separately provisioned inference binding. A company selecting Google Gemini directly must declare a Google-supplied inference Resource and observe it through the Google Provider while Vercel remains responsible only for hosting the Agent runtime. Removing these compatibility inputs requires a coordinated runtime and company migration rather than silently reclassifying them.
+This package does not advertise the `inference` primitive family. A model or AI
+Gateway setting beneath an Agent is not evidence of a separately provisioned
+inference binding.
 
-Provider configuration contains only organisation-wide Vercel team/authentication settings and optional mappings from desired-state secret-reference names to server environment names. Resource deployment intent is derived directly from the selected canonical Omniform resource: project identity, numeric Vercel Git integration repository ID, full commit SHA, company and Agent identities, the model selected beneath the Eve implementation, environment, expected endpoints, and secret-reference names. The Provider provisions that declared model as `LILY_MODEL`; a dashboard-only model choice is not a second desired-state input. There is no second flat or hidden deployment definition.
+Agent declarations select an installed runtime adapter with
+`runtime.interaction.protocol` and identify the implementation separately with
+`implementation.product`. Adapters own environment mapping, Vercel build
+settings, health/info parsing, invocation, and evidence types. The built-in
+`eve.session/1` adapter preserves Lily's existing paths, audience, environment
+names (including `LILY_MODEL`), evidence types, and fail-closed requirement for
+an interaction credential declared in `runtime.secretReferences`. Runtime
+adapters declare whether that credential is required, so replaceable adapters
+may support optional credentials without weakening protocols that require one.
+When an optional adapter supplies a credential reference, it must likewise be
+present in `runtime.secretReferences`. The built-in
+`omniseed.agent.json-turn/1` adapter demonstrates a non-Eve JSON interaction;
+its declaration supplies `runtime.environmentMapping` and optional
+`runtime.build` settings. Unknown protocols fail as `runtime_adapter_missing`.
+Neither product is a Provider and neither implies an inference-family claim.
+
+Provider configuration contains only organisation-wide Vercel team/authentication settings and optional mappings from desired-state secret-reference names to server environment names. Resource deployment intent is derived directly from the selected canonical Omniform resource: project identity, numeric Vercel Git integration repository ID, full commit SHA, company and Agent identities, product, protocol, implementation settings, environment, expected endpoints, and secret-reference names. Each adapter maps these neutral fields to its declared runtime environment; the Eve compatibility adapter alone maps its model to `LILY_MODEL`. There is no second flat or hidden deployment definition.
 
 When `statusProjectId` is configured, Provider connection status is established
 against that declared Vercel project within `teamId`. This supports credentials
@@ -43,7 +62,7 @@ source-mismatched deployments fail closed. This makes reconciliation repeatable
 from the declaration while keeping deployment readiness distinct from later
 runtime observations.
 
-`observe` starts from the deployment binding persisted by OmniSeed and independently verifies Vercel deployment/source identity. Connector observations verify company binding. Agent observations use authenticated Eve health and info endpoints and verify company, Agent, environment, and Lily source identity. `agent.semantic_turn` likewise requires that persisted Engine resource binding; a browser or caller cannot choose a runtime URL.
+`observe` starts from the deployment binding persisted by OmniSeed and independently verifies Vercel deployment/source identity. Connector observations verify company binding. Agent observations dispatch through the explicitly selected protocol adapter and verify company, Agent, environment, product, protocol, and implementation source identity. Evidence exposes the safe product/protocol identity and whitelisted runtime facts, never arbitrary runtime response fields. `agent.semantic_turn` likewise requires that persisted Engine resource binding; a browser or caller cannot choose a runtime URL.
 
 For a declared Eve Agent, `runtime.session` supplies the credential-reference
 name plus issuer and audience. The Provider binds those public settings and the
@@ -60,4 +79,11 @@ otherwise. Explicit rotation uses the Provider configuration's
 Provider process. Public bindings derived from the approved declaration are
 still reconciled on every apply.
 
-Run one JSON-RPC 2.0 message per line with `python provider/vercel_provider.py`. Run tests with `npm test`.
+Existing flat actions and durable bindings migrate deliberately:
+`runtimeModel`, `sessionCredentialReference`, `sessionIssuer`, and
+`sessionAudience` are read as neutral Agent model and interaction fields, with
+product `eve` and protocol `eve.session/1`. Newly normalized plans and bindings
+persist `agentProduct`, `interactionProtocol`, `agentModel`, and
+`interactionCredentialReference` instead.
+
+Run one JSON-RPC 2.0 message per line with `python3 provider/vercel_provider.py`. Run tests with `npm test`.

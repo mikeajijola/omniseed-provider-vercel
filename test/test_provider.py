@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from provider.vercel_provider import PROTOCOL, internal_error, ProviderError, VercelProvider
+from provider.vercel_provider import JSON_TURN_PROTOCOL, PROTOCOL, internal_error, ProviderError, VercelProvider
 
 SHA = "a" * 40
 BASE = {"projectId": "lily-production", "sourceRepository": "mikeajijola/omniseed-lily", "sourceRepositoryId": 123456, "sourceCommitSha": SHA, "expectedCompanyId": "omniseed_ecosystem", "expectedEnvironment": "production", "target": "production"}
@@ -105,6 +105,21 @@ class FakeClient:
         return 200, '\n'.join([json.dumps({"type": "message.appended", "turnId": "turn_1", "data": {"messageDelta": "hello"}}), json.dumps({"type": "message.completed", "turnId": "turn_1"})])
 
 
+class JsonRuntimeClient(FakeClient):
+    def __init__(self, protocol=JSON_TURN_PROTOCOL):
+        super().__init__(runtime={
+            "companyRef": "omniseed_ecosystem", "agentIdentity": "sage", "environment": "production",
+            "source": {"repository": "example/sage", "commitSha": SHA},
+            "product": "sage-runtime", "protocol": protocol
+        })
+
+    def request(self, url, authenticated=False, timeout=10, method="GET", body=None, token=None):
+        if url.endswith("/agent/v1/turn"):
+            self.requests.append({"url": url, "authenticated": authenticated, "method": method, "body": body, "token": token})
+            return 200, {"sessionId": "json_session", "turnId": "json_turn", "response": "hello from sage"}
+        return super().request(url, authenticated, timeout, method, body, token)
+
+
 def binding(spec=AGENT, family="agents"):
     return {"providerResourceId": "vercel://lily-production/deployments/dpl_1", "attributes": {"family": family, "resourceId": "lily", "spec": {**spec, "deploymentId": "dpl_1", "deploymentUrl": "https://lily.example.test", **({"companyBindingUrl": "https://lily.example.test/api/company"} if family == "connectors" else {})}}}
 
@@ -139,6 +154,155 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(self.provider().validate(action("connectors"))["valid"])
         self.assertFalse(self.provider().validate(action("workflows"))["valid"])
         self.assertFalse(self.provider().validate(action("agents", {**AGENT, "runtimeUrl": "https://caller.test"}))["valid"])
+
+    def test_explicit_protocol_selects_second_runtime_adapter_and_neutral_environment(self):
+        desired = copy.deepcopy(CANONICAL_AGENT)
+        desired["organisationalIdentity"] = "sage"
+        desired["bootstrap"]["identity"] = "sage"
+        desired["implementation"] = {**desired["implementation"], "product": "sage-runtime", "framework": "custom", "repository": "https://github.com/example/sage.git"}
+        desired["runtime"]["interaction"] = {"protocol": JSON_TURN_PROTOCOL, "path": "/agent/v1/turn"}
+        desired["runtime"]["environmentMapping"] = {
+            "company": "AGENT_COMPANY", "identity": "AGENT_IDENTITY", "environment": "AGENT_ENVIRONMENT",
+            "sourceRepository": "AGENT_SOURCE_REPOSITORY", "sourceCommitSha": "AGENT_SOURCE_COMMIT",
+            "model": "AGENT_MODEL", "product": "AGENT_PRODUCT", "protocol": "AGENT_PROTOCOL"
+        }
+        normalized = self.provider()._spec(action("agents", desired, "sage"))
+        self.assertEqual(normalized["agentProduct"], "sage-runtime")
+        self.assertEqual(normalized["interactionProtocol"], JSON_TURN_PROTOCOL)
+        environment = self.provider()._public_environment(normalized, "agents")
+        self.assertEqual(environment["AGENT_MODEL"], "nvidia/nemotron-3.5-lightning-free")
+        self.assertNotIn("LILY_MODEL", environment)
+        planned = self.provider(JsonRuntimeClient()).plan(action("agents", desired, "sage"))
+        self.assertEqual(planned["implementation"]["protocol"], JSON_TURN_PROTOCOL)
+        self.assertEqual(planned["expectedEvidence"], ["vercel_api_response", "agent_runtime_health"])
+        eve_spec = self.provider()._spec(action("agents", CANONICAL_AGENT))
+        self.assertNotEqual(
+            self.provider()._deployment_configuration([("agents", "sage", normalized)])[3],
+            self.provider()._deployment_configuration([("agents", "lily", eve_spec)])[3]
+        )
+
+    @patch.dict(os.environ, {"LILY_RUNTIME_OBSERVATION_TOKEN": "runtime-secret"})
+    def test_second_protocol_observes_and_invokes_with_safe_product_protocol_evidence(self):
+        spec = {
+            **AGENT, "agentIdentity": "sage", "agentImplementationRepository": "example/sage",
+            "agentImplementationCommitSha": SHA, "agentProduct": "sage-runtime",
+            "interactionProtocol": JSON_TURN_PROTOCOL, "interactionPath": "/agent/v1/turn",
+            "observationCredentialReference": "LILY_RUNTIME_OBSERVATION_TOKEN"
+        }
+        spec.pop("runtimeModel")
+        resource = binding(spec)
+        client = JsonRuntimeClient()
+        observed = self.provider(client).observe(resource)
+        self.assertEqual(observed["status"], "healthy")
+        self.assertEqual(observed["evidence"][1]["type"], "agent_runtime_health")
+        self.assertEqual(observed["evidence"][1]["product"], "sage-runtime")
+        result = self.provider(client).invoke("agent.semantic_turn", {"message": "hi", "resourceBinding": resource}, {"actorId": "sage"})
+        self.assertEqual(result["response"], "hello from sage")
+        self.assertEqual(result["evidence"]["protocol"], JSON_TURN_PROTOCOL)
+        self.assertNotIn("runtime-secret", json.dumps([observed, result]))
+
+        wrong = JsonRuntimeClient(protocol="wrong.protocol/1")
+        self.assertEqual(self.provider(wrong).observe(resource)["status"], "degraded")
+
+    def test_missing_runtime_adapter_fails_truthfully(self):
+        desired = copy.deepcopy(CANONICAL_AGENT)
+        desired["implementation"]["product"] = "unknown-runtime"
+        desired["runtime"]["interaction"] = {"protocol": "unknown.protocol/1"}
+        issues = self.provider().validate(action("agents", desired))["issues"]
+        self.assertIn("runtime_adapter_missing", [item["code"] for item in issues])
+
+    def test_eve_requires_declared_interaction_credential_before_mutation(self):
+        for mutation in ("missing", "undeclared"):
+            with self.subTest(mutation=mutation):
+                desired = copy.deepcopy(CANONICAL_AGENT)
+                if mutation == "missing":
+                    desired["runtime"]["session"].pop("credentialReference")
+                    expected_code = "missing_field"
+                else:
+                    desired["runtime"]["secretReferences"].remove("LILY_SESSION_JWT_SECRET")
+                    expected_code = "missing_secret_reference"
+                client = FakeClient()
+                provider = self.provider(client)
+
+                issues = provider.validate(action("agents", desired))["issues"]
+                self.assertIn(
+                    (expected_code, "interactionCredentialReference"),
+                    [(issue["code"], issue.get("field")) for issue in issues],
+                )
+                with self.assertRaises(ProviderError) as raised:
+                    provider.apply(action("agents", desired))
+                self.assertEqual(raised.exception.code, "invalid_action")
+                self.assertEqual(client.requests, [])
+
+    def test_optional_credential_adapter_allows_omission_but_rejects_undeclared_reference(self):
+        desired = copy.deepcopy(CANONICAL_AGENT)
+        desired["implementation"] = {**desired["implementation"], "framework": "custom", "product": "json-runtime"}
+        desired["runtime"].pop("session")
+        desired["runtime"]["interaction"] = {"protocol": JSON_TURN_PROTOCOL}
+        self.assertTrue(self.provider().validate(action("agents", desired))["valid"])
+
+        desired["runtime"]["interaction"]["credentialReference"] = "JSON_TURN_CREDENTIAL"
+        client = FakeClient()
+        provider = self.provider(client)
+        issues = provider.validate(action("agents", desired))["issues"]
+        self.assertIn(
+            ("missing_secret_reference", "interactionCredentialReference"),
+            [(issue["code"], issue.get("field")) for issue in issues],
+        )
+        with self.assertRaises(ProviderError) as raised:
+            provider.apply(action("agents", desired))
+        self.assertEqual(raised.exception.code, "invalid_action")
+        self.assertEqual(client.requests, [])
+
+    def test_runtime_environment_mapping_cannot_overwrite_secrets_or_alias_fields(self):
+        desired = copy.deepcopy(CANONICAL_AGENT)
+        desired["runtime"]["environmentMapping"] = {
+            "company": "LILY_SESSION_JWT_SECRET",
+            "identity": "SHARED_RUNTIME_VALUE",
+            "environment": "SHARED_RUNTIME_VALUE",
+            "unsupported": "lowercase-name",
+        }
+        issues = self.provider().validate(action("agents", desired))["issues"]
+        codes = [item["code"] for item in issues]
+        self.assertIn("environment_secret_conflict", codes)
+        self.assertIn("environment_mapping_conflict", codes)
+        self.assertEqual(codes.count("invalid_environment_mapping"), 2)
+
+        with self.assertRaises(ProviderError) as raised:
+            self.provider().apply(action("agents", desired))
+        self.assertEqual(raised.exception.code, "invalid_action")
+
+    def test_runtime_environment_mapping_cannot_overwrite_another_shared_resources_secret(self):
+        agent, connector = shared_actions()
+        agent["desired"]["spec"]["runtime"]["environmentMapping"] = {"identity": "SHARED_NAME"}
+        connector["desired"]["spec"]["secretReferences"] = ["SHARED_NAME"]
+        existing_secret = {"id": "env_shared", "key": "SHARED_NAME", "type": "sensitive", "target": ["production"]}
+        client = FakeClient(existing_env=[existing_secret])
+        provider = self.provider(client)
+        provider.initialize({
+            "protocolVersion": PROTOCOL, "configuration": {},
+            "context": {"companyId": "omniseed_ecosystem", "desiredResources": [
+                {"family": "agents", "id": "lily", "spec": agent["desired"]["spec"]},
+                {"family": "connectors", "id": "omniseed_os", "spec": connector["desired"]["spec"]}
+            ]}
+        })
+
+        validation = provider.validate(agent)
+        self.assertFalse(validation["valid"])
+        self.assertIn("environment_secret_conflict", [item["code"] for item in validation["issues"]])
+        with self.assertRaises(ProviderError) as raised:
+            provider.apply(agent)
+        self.assertEqual(raised.exception.code, "invalid_action")
+        self.assertEqual(client.existing_env, [existing_secret])
+        self.assertFalse(any(request["method"] in ("PATCH", "POST") for request in client.requests))
+
+        shared = [
+            ("agents", "lily", provider._spec(agent)),
+            ("connectors", "omniseed_os", provider._spec(connector)),
+        ]
+        with self.assertRaises(ProviderError) as defense:
+            provider._deployment_configuration(shared)
+        self.assertEqual(defense.exception.code, "environment_secret_conflict")
 
     def test_nondeployment_connector_is_not_misread_as_a_shared_deployment(self):
         operation = action("connectors", {"companyBinding": "omniseed_ecosystem", "endpoint": "https://omniseed.example"}, "omniseed_operations")
@@ -206,6 +370,59 @@ class ProviderTests(unittest.TestCase):
         self.assertNotIn("outputDirectory", deployments[0]["body"]["projectSettings"])
         environment_keys = {item["key"] for item in client.existing_env}
         self.assertTrue({"LILY_MODEL", "OMNISEED_COMPANY_DEFINITION_URL", "OMNISEED_STEWARD_ACTOR_ID"}.issubset(environment_keys))
+
+    @patch.dict(os.environ, {
+        "OMNISEED_OPERATION_TOKEN": "operation-secret", "LILY_RUNTIME_OBSERVATION_TOKEN": "observation-secret",
+        "LILY_SESSION_JWT_SECRET": "session-secret"
+    })
+    def test_shared_agents_with_matching_runtime_builds_create_one_deployment(self):
+        agent, _ = shared_actions()
+        peer = copy.deepcopy(agent)
+        peer["resourceId"] = "lily_peer"
+        client = FakeClient()
+        provider = self.provider(client)
+        provider.initialize({
+            "protocolVersion": PROTOCOL, "configuration": {},
+            "context": {"companyId": "omniseed_ecosystem", "desiredResources": [
+                {"family": "agents", "id": "lily", "spec": agent["desired"]["spec"]},
+                {"family": "agents", "id": "lily_peer", "spec": peer["desired"]["spec"]}
+            ]}
+        })
+
+        applied = provider.apply(agent)
+
+        deployments = [request for request in client.requests if request["method"] == "POST" and "/v13/deployments" in request["url"]]
+        self.assertEqual(len(deployments), 1)
+        self.assertEqual(applied["attributes"]["sharedResources"], ["agents:lily", "agents:lily_peer"])
+        self.assertEqual(deployments[0]["body"]["projectSettings"], {
+            "framework": "eve", "buildCommand": "npm run build:runtime",
+            "outputDirectory": ".output", "nodeVersion": "24.x"
+        })
+
+    @patch.dict(os.environ, {
+        "OMNISEED_OPERATION_TOKEN": "operation-secret", "LILY_RUNTIME_OBSERVATION_TOKEN": "observation-secret",
+        "LILY_SESSION_JWT_SECRET": "session-secret"
+    })
+    def test_shared_agents_with_conflicting_runtime_builds_are_rejected(self):
+        agent, _ = shared_actions()
+        peer = copy.deepcopy(agent)
+        peer["resourceId"] = "lily_peer"
+        peer["desired"]["spec"]["runtime"]["build"] = {"buildCommand": "npm run build:peer"}
+        client = FakeClient()
+        provider = self.provider(client)
+        provider.initialize({
+            "protocolVersion": PROTOCOL, "configuration": {},
+            "context": {"companyId": "omniseed_ecosystem", "desiredResources": [
+                {"family": "agents", "id": "lily", "spec": agent["desired"]["spec"]},
+                {"family": "agents", "id": "lily_peer", "spec": peer["desired"]["spec"]}
+            ]}
+        })
+
+        with self.assertRaises(ProviderError) as raised:
+            provider.apply(agent)
+
+        self.assertEqual(raised.exception.code, "shared_runtime_conflict")
+        self.assertFalse(any(request["method"] == "POST" and "/v13/deployments" in request["url"] for request in client.requests))
 
     @patch.dict(os.environ, {
         "OMNISEED_OPERATION_TOKEN": "operation-secret", "LILY_RUNTIME_OBSERVATION_TOKEN": "observation-secret",

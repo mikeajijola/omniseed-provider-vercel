@@ -1,11 +1,11 @@
 {
   "name": "@omniseed/provider-vercel",
-  "version": "0.2.0-alpha.10",
-  "description": "Vercel Provider for immutable connector and Eve Agent runtimes",
+  "version": "0.2.0-alpha.11",
+  "description": "Vercel Provider for immutable connectors and declared Agent runtimes",
   "type": "module",
   "private": true,
   "files": ["provider-package.json", "provider-configuration.schema.json", "provider/", "evidence/", "test/PROVENANCE.md", "README.md"],
-  "scripts": { "test": "python -m unittest discover -s test -p 'test_*.py' -v" },
+  "scripts": { "test": "python3 -m unittest discover -s test -p 'test_*.py' -v" },
   "engines": { "node": ">=20" },
   "license": "Apache-2.0"
 }

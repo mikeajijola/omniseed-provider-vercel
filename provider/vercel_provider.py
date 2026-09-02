@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Vercel Provider for connector deployments and immutable Eve Agent runtimes."""
+"""Vercel Provider for connectors and declared immutable Agent runtimes."""
 
 import datetime
 import hashlib
@@ -15,7 +15,7 @@ import urllib.request
 
 PROTOCOL = "omniseed.provider.protocol/1.0"
 PROVIDER_ID = "vercel"
-VERSION = "0.2.0-alpha.10"
+VERSION = "0.2.0-alpha.11"
 FAMILIES = ["agents", "connectors"]
 METHODS = [
     "provider.initialize", "provider.status", "provider.validate", "provider.plan",
@@ -25,6 +25,15 @@ OPERATIONS = [
     "interface.deployment.observe", "interface.deployment.status",
     "interface.deployment.evidence", "interface.deployment.promote", "agent.semantic_turn"
 ]
+
+EVE_PROTOCOL = "eve.session/1"
+JSON_TURN_PROTOCOL = "omniseed.agent.json-turn/1"
+RUNTIME_ENVIRONMENT_FIELDS = {
+    "company", "identity", "environment", "sourceRepository", "sourceCommitSha",
+    "model", "operationEndpoint", "operationCredentialReference",
+    "sessionCredentialReference", "sessionIssuer", "sessionAudience", "product", "protocol"
+}
+ENVIRONMENT_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 def now():
@@ -157,13 +166,151 @@ class EveClient:
         return {"sessionId": session_id, "turnId": turn_id, "response": answer.strip()}
 
 
+class RuntimeAdapter:
+    """Product-neutral boundary for one installed Agent interaction protocol."""
+
+    protocol = None
+    default_product = None
+    health_evidence_type = "agent_runtime_health"
+    turn_evidence_type = "agent_semantic_turn"
+    requires_interaction_credential = False
+
+    def normalize(self, metadata):
+        return {}
+
+    def public_environment(self, spec):
+        mapping = spec.get("runtimeEnvironmentMapping") or {}
+        if not isinstance(mapping, dict):
+            return {}
+        values = {
+            "company": spec.get("expectedCompanyId"), "identity": spec.get("agentIdentity"),
+            "environment": spec.get("expectedEnvironment"), "sourceRepository": spec.get("agentImplementationRepository"),
+            "sourceCommitSha": spec.get("agentImplementationCommitSha"), "model": spec.get("agentModel"),
+            "operationEndpoint": spec.get("operationEndpoint"),
+            "operationCredentialReference": spec.get("operationCredentialReference"),
+            "sessionCredentialReference": spec.get("interactionCredentialReference"),
+            "sessionIssuer": spec.get("interactionIssuer"), "sessionAudience": spec.get("interactionAudience"),
+            "product": spec.get("agentProduct"), "protocol": spec.get("interactionProtocol")
+        }
+        return {environment_name: values[field] for field, environment_name in mapping.items()
+                if field in values and environment_name and values[field] is not None}
+
+    def project_settings(self, spec):
+        settings = spec.get("runtimeBuild") or {}
+        return {
+            "framework": settings.get("framework"),
+            "buildCommand": settings.get("buildCommand", "npm run build:runtime"),
+            "outputDirectory": settings.get("outputDirectory", ".output"),
+            "nodeVersion": settings.get("nodeVersion", "24.x")
+        }
+
+    @staticmethod
+    def identity(info):
+        return {
+            "company": info.get("companyRef") or (info.get("company") or {}).get("id"),
+            "identity": info.get("agentIdentity") or (info.get("agent") or {}).get("identity"),
+            "environment": info.get("environment"), "source": info.get("source") or {},
+            "product": info.get("product") or (info.get("agent") or {}).get("product"),
+            "protocol": info.get("protocol") or (info.get("interaction") or {}).get("protocol")
+        }
+
+    def observe(self, provider, spec):
+        origin = spec.get("runtimeUrl") or spec["deploymentUrl"]
+        token = provider._runtime_token(spec)
+        _, health = provider.client.request(origin.rstrip("/") + spec.get("healthPath", "/health"), authenticated=True, token=token, timeout=spec.get("timeoutSeconds", 10))
+        _, info = provider.client.request(origin.rstrip("/") + spec.get("infoPath", "/info"), authenticated=True, token=token, timeout=spec.get("timeoutSeconds", 10))
+        return health, info, health.get("ok") is True
+
+    @staticmethod
+    def safe_projection(health, info):
+        """Whitelist runtime facts; a runtime cannot echo credentials to evidence."""
+        source, agent, interaction = info.get("source") or {}, info.get("agent") or {}, info.get("interaction") or {}
+        safe_health = {key: health[key] for key in ("ok", "status", "version") if key in health}
+        safe_info = {key: info[key] for key in ("companyRef", "agentIdentity", "environment", "product", "protocol", "version") if key in info}
+        if source:
+            safe_info["source"] = {key: source[key] for key in ("repository", "commitSha") if key in source}
+        if agent:
+            safe_info["agent"] = {key: agent[key] for key in ("identity", "product", "framework") if key in agent}
+        if interaction:
+            safe_info["interaction"] = {"protocol": interaction["protocol"]} if "protocol" in interaction else {}
+        return safe_health, safe_info
+
+    def turn(self, provider, spec, message):
+        raise ProviderError("The selected interaction protocol cannot be invoked", "protocol_operation_unsupported", {"protocol": self.protocol})
+
+
+class EveRuntimeAdapter(RuntimeAdapter):
+    protocol = EVE_PROTOCOL
+    default_product = "eve"
+    health_evidence_type = "eve_agent_runtime_health"
+    turn_evidence_type = "eve_agent_semantic_turn"
+    requires_interaction_credential = True
+
+    def normalize(self, metadata):
+        session = metadata.get("session") or {}
+        custom_mapping = metadata.get("environmentMapping") or {}
+        if not isinstance(custom_mapping, dict):
+            return {"runtimeEnvironmentMapping": custom_mapping}
+        return {
+            "interactionCredentialReference": session.get("credentialReference"),
+            "interactionIssuer": session.get("issuer", "omniseed"),
+            "interactionAudience": session.get("audience", "omniseed-lily"),
+            "runtimeEnvironmentMapping": {
+                "company": "OMNISEED_COMPANY_REF", "identity": "OMNISEED_AGENT_IDENTITY",
+                "environment": "OMNISEED_ENVIRONMENT", "sourceRepository": "OMNISEED_SOURCE_REPOSITORY",
+                "sourceCommitSha": "OMNISEED_SOURCE_COMMIT_SHA", "model": "LILY_MODEL",
+                "operationEndpoint": "OMNISEED_OPERATION_ENDPOINT",
+                "operationCredentialReference": "OMNISEED_OPERATION_CREDENTIAL_ENV",
+                "sessionCredentialReference": "OMNISEED_SESSION_CREDENTIAL_ENV",
+                "sessionIssuer": "OMNISEED_SESSION_JWT_ISSUER", "sessionAudience": "OMNISEED_SESSION_JWT_AUDIENCE",
+                **custom_mapping
+            }
+        }
+
+    def project_settings(self, spec):
+        return {"framework": "eve", "buildCommand": "npm run build:runtime", "outputDirectory": ".output", "nodeVersion": "24.x", **(spec.get("runtimeBuild") or {})}
+
+    def observe(self, provider, spec):
+        client = EveClient(provider.client, spec.get("runtimeUrl") or spec["deploymentUrl"], provider._runtime_token(spec), spec.get("timeoutSeconds", 10), spec.get("healthPath", "/health"), spec.get("infoPath", "/info"))
+        health, info = client.health(), client.info()
+        return health, info, health.get("ok") is True
+
+    def turn(self, provider, spec, message):
+        return EveClient(provider.client, spec.get("runtimeUrl") or spec["deploymentUrl"], provider._runtime_token(spec), spec.get("timeoutSeconds", 10), spec.get("healthPath", "/health"), spec.get("infoPath", "/info")).turn(message)
+
+
+class JsonTurnRuntimeAdapter(RuntimeAdapter):
+    """Small second protocol used by compatible non-Eve Vercel artifacts."""
+
+    protocol = JSON_TURN_PROTOCOL
+    default_product = "json-turn-runtime"
+
+    def normalize(self, metadata):
+        interaction = metadata.get("interaction") or {}
+        return {
+            "interactionCredentialReference": interaction.get("credentialReference"),
+            "runtimeEnvironmentMapping": metadata.get("environmentMapping") or {},
+        }
+
+    def turn(self, provider, spec, message):
+        origin = spec.get("runtimeUrl") or spec["deploymentUrl"]
+        path = spec.get("interactionPath", "/agent/v1/turn")
+        _, value = provider.client.request(origin.rstrip("/") + path, authenticated=True, token=provider._runtime_token(spec), timeout=spec.get("timeoutSeconds", 10), method="POST", body={"message": message})
+        response, session_id, turn_id = value.get("response"), value.get("sessionId"), value.get("turnId")
+        if not isinstance(response, str) or not session_id or not turn_id:
+            raise ProviderError("Agent runtime returned an invalid turn", "invalid_remote_response")
+        return {"sessionId": session_id, "turnId": turn_id, "response": response}
+
+
 class VercelProvider:
-    def __init__(self, configuration=None, client=None):
+    def __init__(self, configuration=None, client=None, runtime_adapters=None):
         self.configuration = configuration or {}
         self.client = client or NetworkClient()
         self.company_id = None
         self.desired_resources = []
         self.deployment_cache = {}
+        adapters = runtime_adapters or [EveRuntimeAdapter(), JsonTurnRuntimeAdapter()]
+        self.runtime_adapters = {adapter.protocol: adapter for adapter in adapters}
 
     def initialize(self, params):
         if params.get("protocolVersion") != PROTOCOL:
@@ -177,10 +324,10 @@ class VercelProvider:
             "provider": {"id": PROVIDER_ID, "name": "Vercel", "version": VERSION},
             "primitiveFamilies": FAMILIES,
             "configurationSchema": "./provider-configuration.schema.json",
-            "observationTypes": ["vercel_deployment_state", "company_binding_state", "eve_agent_runtime_state"],
-            "evidenceTypes": ["vercel_api_response", "http_company_binding", "eve_agent_runtime_health", "eve_agent_semantic_turn"],
+            "observationTypes": ["vercel_deployment_state", "company_binding_state", "agent_runtime_state", "eve_agent_runtime_state"],
+            "evidenceTypes": ["vercel_api_response", "http_company_binding", "agent_runtime_health", "agent_semantic_turn", "eve_agent_runtime_health", "eve_agent_semantic_turn"],
             "offerings": [
-                {"family": "agents", "id": "semantic_agent_runtime", "products": ["eve", "functions", "ai_gateway"]},
+                {"family": "agents", "id": "semantic_agent_runtime", "products": ["eve", "json-turn-runtime", "functions"]},
                 {"family": "connectors", "id": "deployment_runtime", "products": ["functions", "deployment_services"]}
             ],
             "operations": OPERATIONS, "methods": METHODS
@@ -209,20 +356,45 @@ class VercelProvider:
             if family == "agents":
                 spec.setdefault("agentImplementationRepository", spec.get("sourceRepository"))
                 spec.setdefault("agentImplementationCommitSha", spec.get("sourceCommitSha"))
+                # Deliberate migration for bindings created before product/protocol
+                # became neutral persisted fields.
+                spec.setdefault("agentProduct", spec.get("runtimeProduct", "eve"))
+                spec.setdefault("interactionProtocol", spec.get("runtimeProtocol", EVE_PROTOCOL))
+                spec.setdefault("agentModel", spec.get("runtimeModel"))
+                spec.setdefault("interactionCredentialReference", spec.get("sessionCredentialReference"))
+                spec.setdefault("interactionIssuer", spec.get("sessionIssuer"))
+                spec.setdefault("interactionAudience", spec.get("sessionAudience"))
+                adapter = self.runtime_adapters.get(spec["interactionProtocol"])
+                if adapter:
+                    defaults = adapter.normalize({"session": {
+                        "credentialReference": spec.get("interactionCredentialReference"),
+                        "issuer": spec.get("interactionIssuer"), "audience": spec.get("interactionAudience")
+                    }, "environmentMapping": spec.get("runtimeEnvironmentMapping")})
+                    for key, value in defaults.items(): spec.setdefault(key, value)
             return spec
         if family == "agents":
             runtime, implementation, bootstrap = raw.get("runtime") or {}, raw.get("implementation") or {}, raw.get("bootstrap") or {}
             source = runtime.get("source") or implementation
             endpoints = runtime.get("expectedEndpoints") or {}
             session = runtime.get("session") or {}
-            return {
+            interaction = runtime.get("interaction") or {}
+            # framework=eve is the compatibility migration. New products select
+            # an installed adapter by protocol, never by actor/model/repository.
+            protocol = interaction.get("protocol") or runtime.get("interactionProtocol") or session.get("protocol")
+            if not protocol and implementation.get("framework") == "eve": protocol = EVE_PROTOCOL
+            product = implementation.get("product") or implementation.get("framework")
+            adapter = self.runtime_adapters.get(protocol)
+            adapter_fields = adapter.normalize({**runtime, "session": session, "interaction": interaction}) if adapter else {}
+            spec = {
                 "projectId": runtime.get("project"),
                 "sourceRepository": self._repository(source.get("repository")),
                 "sourceRepositoryId": source.get("repositoryId"),
                 "sourceCommitSha": source.get("revision"),
                 "agentImplementationRepository": self._repository(implementation.get("repository")),
                 "agentImplementationCommitSha": implementation.get("revision"),
-                "runtimeModel": implementation.get("model"),
+                "agentProduct": product,
+                "interactionProtocol": protocol,
+                "agentModel": implementation.get("model"),
                 "expectedCompanyId": bootstrap.get("company"),
                 "expectedEnvironment": runtime.get("environment"),
                 "agentIdentity": raw.get("organisationalIdentity") or bootstrap.get("identity"),
@@ -233,14 +405,15 @@ class VercelProvider:
                 "infoPath": self._endpoint_path(endpoints.get("info"), "/info"),
                 "operationEndpoint": bootstrap.get("omniseedEndpoint"),
                 "operationCredentialReference": bootstrap.get("credentialReference"),
-                "sessionCredentialReference": session.get("credentialReference"),
-                "sessionIssuer": session.get("issuer", "omniseed"),
-                "sessionAudience": session.get("audience", "omniseed-lily"),
+                "interactionPath": interaction.get("path"),
+                "runtimeBuild": runtime.get("build") or {},
                 "target": runtime.get("target", "production"),
                 "timeoutSeconds": runtime.get("timeoutSeconds", 10),
                 "deploymentTimeoutSeconds": runtime.get("deploymentTimeoutSeconds", 300),
                 "pollIntervalSeconds": runtime.get("pollIntervalSeconds", 2),
+                **adapter_fields,
             }
+            return spec
         if family == "connectors":
             source = raw.get("source") if isinstance(raw.get("source"), dict) else {}
             binding = raw.get("companyBinding") if isinstance(raw.get("companyBinding"), dict) else {}
@@ -278,7 +451,7 @@ class VercelProvider:
         issues = []
         common = ["projectId", "sourceRepository", "sourceRepositoryId", "sourceCommitSha", "expectedCompanyId", "expectedEnvironment"]
         family_fields = {
-            "agents": ["agentIdentity", "agentImplementationRepository", "agentImplementationCommitSha", "runtimeModel", "secretReferences", "observationCredentialReference", "healthPath", "infoPath", "operationEndpoint", "operationCredentialReference", "sessionCredentialReference", "sessionIssuer", "sessionAudience"],
+            "agents": ["agentIdentity", "agentImplementationRepository", "agentImplementationCommitSha", "agentProduct", "interactionProtocol", "secretReferences", "observationCredentialReference", "healthPath", "infoPath", "operationEndpoint", "operationCredentialReference"],
             "connectors": ["expectedRepository", "desiredRevision", "companyDefinitionPath", "stewardActorId"]
         }
         if family == "connectors" and not spec.get("readOnlyInspection"):
@@ -302,8 +475,32 @@ class VercelProvider:
             issues.append({"code": "company_boundary", "message": "Action company does not match Provider context"})
         if family == "agents" and raw.get("projectId") and "runtimeUrl" in raw:
             issues.append({"code": "caller_runtime_forbidden", "field": "runtimeUrl", "message": "Runtime URL must come from Vercel deployment state"})
-        if family == "agents" and spec.get("sessionCredentialReference") not in (spec.get("secretReferences") or []):
-            issues.append({"code": "missing_secret_reference", "field": "sessionCredentialReference", "message": "The Eve session credential must be included in secretReferences"})
+        if family == "agents" and spec.get("interactionProtocol") not in self.runtime_adapters:
+            issues.append({"code": "runtime_adapter_missing", "field": "interactionProtocol", "message": "No installed adapter supports the declared interaction protocol"})
+        if family == "agents":
+            mapping = spec.get("runtimeEnvironmentMapping") or {}
+            secret_names = self._shared_deployment_secret_names(action, spec)
+            if not isinstance(mapping, dict):
+                issues.append({"code": "invalid_environment_mapping", "field": "runtimeEnvironmentMapping", "message": "Runtime environment mapping must be an object"})
+                mapping = {}
+            destinations = [value for value in mapping.values() if isinstance(value, str) and value]
+            for field, environment_name in mapping.items():
+                if field not in RUNTIME_ENVIRONMENT_FIELDS:
+                    issues.append({"code": "invalid_environment_mapping", "field": f"runtimeEnvironmentMapping.{field}", "message": "The runtime environment field is not supported"})
+                if not isinstance(environment_name, str) or not ENVIRONMENT_NAME.fullmatch(environment_name):
+                    issues.append({"code": "invalid_environment_mapping", "field": f"runtimeEnvironmentMapping.{field}", "message": "Runtime environment names must use uppercase letters, numbers, and underscores"})
+            for environment_name in sorted(set(destinations)):
+                if destinations.count(environment_name) > 1:
+                    issues.append({"code": "environment_mapping_conflict", "field": "runtimeEnvironmentMapping", "message": "Runtime fields must map to unique environment names"})
+                if environment_name in secret_names:
+                    issues.append({"code": "environment_secret_conflict", "field": "runtimeEnvironmentMapping", "message": "A public runtime field cannot overwrite a secret reference in the shared deployment"})
+        if family == "agents" and spec.get("interactionProtocol") in self.runtime_adapters:
+            adapter = self.runtime_adapters[spec["interactionProtocol"]]
+            credential_reference = spec.get("interactionCredentialReference")
+            if getattr(adapter, "requires_interaction_credential", False) and not credential_reference:
+                issues.append({"code": "missing_field", "field": "interactionCredentialReference", "message": "The selected interaction protocol requires an interaction credential"})
+            elif credential_reference and credential_reference not in (spec.get("secretReferences") or []):
+                issues.append({"code": "missing_secret_reference", "field": "interactionCredentialReference", "message": "The interaction credential must be included in secretReferences"})
         return issues
 
     def status(self):
@@ -354,10 +551,10 @@ class VercelProvider:
             "family": action.get("family"), "resourceId": action.get("resourceId"),
             "project": {"id": spec.get("projectId"), "change": project_change},
             "source": {"repository": spec.get("sourceRepository"), "repositoryId": spec.get("sourceRepositoryId"), "commitSha": spec.get("sourceCommitSha")},
-            "implementation": ({"repository": spec.get("agentImplementationRepository"), "commitSha": spec.get("agentImplementationCommitSha")} if action.get("family") == "agents" else None),
+            "implementation": ({"repository": spec.get("agentImplementationRepository"), "commitSha": spec.get("agentImplementationCommitSha"), "product": spec.get("agentProduct"), "protocol": spec.get("interactionProtocol")} if action.get("family") == "agents" else None),
             "environmentBindings": self._environment_binding_names(spec, action.get("family")),
             "deploymentImpact": {"target": spec.get("target", "production"), "environment": spec.get("expectedEnvironment")},
-            "expectedEvidence": ["vercel_api_response"] + (["eve_agent_runtime_health"] if action.get("family") == "agents" else ["http_company_binding"])
+            "expectedEvidence": ["vercel_api_response"] + ([self._adapter(spec).health_evidence_type] if action.get("family") == "agents" and spec.get("interactionProtocol") in self.runtime_adapters else ["http_company_binding"] if action.get("family") == "connectors" else [])
         }
 
     def _ensure_project(self, spec):
@@ -401,19 +598,7 @@ class VercelProvider:
             }
         if family != "agents":
             return {}
-        return {
-            "OMNISEED_COMPANY_REF": spec["expectedCompanyId"],
-            "OMNISEED_AGENT_IDENTITY": spec["agentIdentity"],
-            "OMNISEED_ENVIRONMENT": spec["expectedEnvironment"],
-            "OMNISEED_SOURCE_REPOSITORY": spec.get("agentImplementationRepository") or spec["sourceRepository"],
-            "OMNISEED_SOURCE_COMMIT_SHA": spec.get("agentImplementationCommitSha") or spec["sourceCommitSha"],
-            "LILY_MODEL": spec["runtimeModel"],
-            "OMNISEED_OPERATION_ENDPOINT": spec["operationEndpoint"],
-            "OMNISEED_OPERATION_CREDENTIAL_ENV": spec["operationCredentialReference"],
-            "OMNISEED_SESSION_CREDENTIAL_ENV": spec["sessionCredentialReference"],
-            "OMNISEED_SESSION_JWT_ISSUER": spec["sessionIssuer"],
-            "OMNISEED_SESSION_JWT_AUDIENCE": spec["sessionAudience"],
-        }
+        return self._adapter(spec).public_environment(spec)
     def _environment_values(self, spec, family, existing_secret_references=None):
         target = spec.get("target", "production")
         public = self._public_environment(spec, family)
@@ -457,23 +642,47 @@ class VercelProvider:
             spec.get("target", "production")
         )
 
+    @staticmethod
+    def _secret_reference_names(spec):
+        references = spec.get("secretReferences") or []
+        return set(references if not isinstance(references, dict) else references.keys())
+
+    @staticmethod
+    def _declares_deployment(resource):
+        family = resource.get("family")
+        raw = resource.get("spec") or {}
+        if family == "agents":
+            runtime = raw.get("runtime") if isinstance(raw.get("runtime"), dict) else {}
+            source = runtime.get("source") if isinstance(runtime.get("source"), dict) else {}
+            return bool(runtime.get("project") and source.get("repositoryId") and source.get("revision"))
+        if family == "connectors":
+            source = raw.get("source") if isinstance(raw.get("source"), dict) else {}
+            return bool(raw.get("project") and source.get("repositoryId") and source.get("revision"))
+        return False
+
+    def _shared_deployment_secret_names(self, action, spec):
+        """Collect secret names from every declared resource on this deployment."""
+        names = self._secret_reference_names(spec)
+        for resource in self.desired_resources:
+            if not self._declares_deployment(resource):
+                continue
+            family = resource.get("family")
+            candidate = self._spec({
+                "family": family, "resourceId": resource.get("id"),
+                "desired": {"spec": resource.get("spec") or {}}
+            })
+            if self._deployment_key(candidate) == self._deployment_key(spec):
+                names.update(self._secret_reference_names(candidate))
+        return names
+
     def _shared_deployment_specs(self, action, spec):
         """Resolve approved Provider resources sharing one immutable deployment."""
         matches = []
         for resource in self.desired_resources:
+            if not self._declares_deployment(resource):
+                continue
             family = resource.get("family")
             raw = resource.get("spec") or {}
-            if family == "agents":
-                runtime = raw.get("runtime") if isinstance(raw.get("runtime"), dict) else {}
-                source = runtime.get("source") if isinstance(runtime.get("source"), dict) else {}
-                if not runtime.get("project") or not source.get("repositoryId") or not source.get("revision"):
-                    continue
-            elif family == "connectors":
-                source = raw.get("source") if isinstance(raw.get("source"), dict) else {}
-                if not raw.get("project") or not source.get("repositoryId") or not source.get("revision"):
-                    continue
-            else:
-                continue
             candidate_action = {
                 "family": family, "resourceId": resource.get("id"),
                 "desired": {"spec": raw}
@@ -492,9 +701,15 @@ class VercelProvider:
         return sorted(matches, key=lambda item: (item[0], item[1]))
 
     def _deployment_configuration(self, shared):
-        public, secret_references, resources = {}, set(), []
+        public, secret_references, resources, runtimes = {}, set(), [], []
         for family, resource_id, spec in shared:
             resources.append(f"{family}:{resource_id}")
+            if family == "agents":
+                runtimes.append({
+                    "resource": resource_id, "product": spec.get("agentProduct"),
+                    "protocol": spec.get("interactionProtocol"),
+                    "build": self._adapter(spec).project_settings(spec)
+                })
             for key, value in self._public_environment(spec, family).items():
                 if value is None:
                     continue
@@ -506,7 +721,13 @@ class VercelProvider:
                 public[key] = value
             references = spec.get("secretReferences") or []
             secret_references.update(references if not isinstance(references, dict) else references.keys())
-        document = {"public": public, "secretReferences": sorted(secret_references), "resources": resources}
+        conflicts = sorted(set(public).intersection(secret_references))
+        if conflicts:
+            raise ProviderError(
+                "A public environment value cannot overwrite a shared deployment secret reference",
+                "environment_secret_conflict", {"key": conflicts[0]}
+            )
+        document = {"public": public, "secretReferences": sorted(secret_references), "resources": resources, "agentRuntimes": runtimes}
         digest = hashlib.sha256(json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         return public, sorted(secret_references), resources, digest
 
@@ -595,6 +816,7 @@ class VercelProvider:
                 "omniseedFamily": family, "omniseedResourceId": action["resourceId"],
                 "omniseedResources": ",".join(resources), "omniseedConfigurationHash": configuration_hash,
                 "omniseedCompanyId": spec["expectedCompanyId"], "omniseedAgentIdentity": spec.get("agentIdentity"),
+                "omniseedAgentProduct": spec.get("agentProduct"), "omniseedInteractionProtocol": spec.get("interactionProtocol"),
                 "omniseedSourceRepository": spec["sourceRepository"], "omniseedSourceCommit": spec["sourceCommitSha"]
             }.items() if value is not None}
         }
@@ -602,7 +824,11 @@ class VercelProvider:
         if {"agents", "connectors"}.issubset(shared_families):
             body["projectSettings"] = {"framework": None, "buildCommand": "npm run build:vercel", "nodeVersion": "24.x"}
         elif "agents" in shared_families:
-            body["projectSettings"] = {"framework": "eve", "buildCommand": "npm run build:runtime", "outputDirectory": ".output", "nodeVersion": "24.x"}
+            agent_specs = [item[2] for item in shared if item[0] == "agents"]
+            settings = [self._adapter(item).project_settings(item) for item in agent_specs]
+            if any(item != settings[0] for item in settings[1:]):
+                raise ProviderError("Shared Agent resources require conflicting runtime builds", "shared_runtime_conflict")
+            body["projectSettings"] = settings[0]
         deployment_change = "reuse"
         if deployment is None:
             endpoint = "https://api.vercel.com/v13/deployments" + self._team_query(spec)
@@ -656,8 +882,20 @@ class VercelProvider:
         name = spec.get("observationCredentialReference") or self.configuration.get("runtimeAuthTokenEnv")
         return os.environ.get(name) if name else None
 
-    def _eve(self, spec):
-        return EveClient(self.client, spec.get("runtimeUrl") or spec["deploymentUrl"], self._runtime_token(spec), spec.get("timeoutSeconds", 10), spec.get("healthPath", "/health"), spec.get("infoPath", "/info"))
+    def _adapter(self, spec):
+        # Engine may replay an older durable binding without re-normalising it.
+        # Preserve that binding as Eve while all newly planned state carries the
+        # neutral product/protocol fields explicitly.
+        protocol = spec.get("interactionProtocol") or (EVE_PROTOCOL if spec.get("runtimeModel") is not None else None)
+        if protocol == EVE_PROTOCOL:
+            spec.setdefault("interactionProtocol", protocol)
+            spec.setdefault("agentProduct", "eve")
+            spec.setdefault("agentModel", spec.get("runtimeModel"))
+            spec.setdefault("interactionCredentialReference", spec.get("sessionCredentialReference"))
+        adapter = self.runtime_adapters.get(protocol)
+        if not adapter:
+            raise ProviderError("No installed adapter supports the declared interaction protocol", "runtime_adapter_missing", {"protocol": protocol})
+        return adapter
 
     def observe(self, resource):
         attributes = resource.get("attributes") or {}
@@ -669,17 +907,21 @@ class VercelProvider:
         evidence = [{"id": evidence_id(family, resource_id, spec["deploymentId"], "vercel_api_response"), "type": "vercel_api_response", "source": PROVIDER_ID, "projectId": spec["projectId"], "deploymentId": spec["deploymentId"], "state": state, **source, "observedAt": checked_at}]
         snapshot = {"projectId": spec["projectId"], "deploymentId": spec["deploymentId"], "deploymentUrl": spec["deploymentUrl"], "deploymentState": state, "deploymentReady": state == "READY", **source}
         if family == "agents":
-            health, info = self._eve(spec).health(), self._eve(spec).info()
-            runtime_company = info.get("companyRef") or (info.get("company") or {}).get("id")
-            runtime_identity = info.get("agentIdentity") or (info.get("agent") or {}).get("identity")
-            runtime_environment = info.get("environment")
-            runtime_source = info.get("source") or {}
+            adapter = self._adapter(spec)
+            health, info, protocol_healthy = adapter.observe(self, spec)
+            identity = adapter.identity(info)
+            safe_health, safe_info = adapter.safe_projection(health, info)
+            runtime_company, runtime_identity = identity["company"], identity["identity"]
+            runtime_environment, runtime_source = identity["environment"], identity["source"]
             implementation_repository = spec.get("agentImplementationRepository") or spec["sourceRepository"]
             implementation_commit = spec.get("agentImplementationCommitSha") or spec["sourceCommitSha"]
-            runtime_matches = runtime_company == spec["expectedCompanyId"] and runtime_identity == spec["agentIdentity"] and runtime_environment == spec["expectedEnvironment"] and runtime_source.get("repository") == implementation_repository and runtime_source.get("commitSha") == implementation_commit
-            healthy = deployment_ok and health.get("ok") is True and runtime_matches
-            snapshot.update({"health": health, "runtime": info, "runtimeIdentityMatches": runtime_matches})
-            evidence.append({"id": evidence_id(family, resource_id, spec["deploymentId"], "eve_agent_runtime_health"), "type": "eve_agent_runtime_health", "source": PROVIDER_ID, "product": "eve", "deploymentId": spec["deploymentId"], "health": health, "runtime": info, "matchesDesired": runtime_matches, "observedAt": checked_at})
+            legacy_eve = spec["interactionProtocol"] == EVE_PROTOCOL
+            product_matches = identity["product"] == spec["agentProduct"] or (legacy_eve and identity["product"] is None)
+            protocol_matches = identity["protocol"] == spec["interactionProtocol"] or (legacy_eve and identity["protocol"] is None)
+            runtime_matches = runtime_company == spec["expectedCompanyId"] and runtime_identity == spec["agentIdentity"] and runtime_environment == spec["expectedEnvironment"] and runtime_source.get("repository") == implementation_repository and runtime_source.get("commitSha") == implementation_commit and product_matches and protocol_matches
+            healthy = deployment_ok and protocol_healthy and runtime_matches
+            snapshot.update({"health": safe_health, "runtime": safe_info, "runtimeIdentityMatches": runtime_matches, "product": spec["agentProduct"], "protocol": spec["interactionProtocol"]})
+            evidence.append({"id": evidence_id(family, resource_id, spec["deploymentId"], adapter.health_evidence_type), "type": adapter.health_evidence_type, "source": PROVIDER_ID, "product": spec["agentProduct"], "protocol": spec["interactionProtocol"], "deploymentId": spec["deploymentId"], "health": safe_health, "runtime": safe_info, "matchesDesired": runtime_matches, "observedAt": checked_at})
         elif family == "connectors":
             _, binding = self.client.json_request(spec["companyBindingUrl"], timeout=spec.get("timeoutSeconds", 10))
             instance = binding.get("instance") or {}
@@ -713,8 +955,9 @@ class VercelProvider:
             message = value.get("message")
             if not isinstance(message, str) or not message.strip():
                 raise ProviderError("A non-empty message is required", "invalid_input")
-            result = self._eve(spec).turn(message)
-            return {**result, "evidence": {"type": "eve_agent_semantic_turn", "source": PROVIDER_ID, "product": "eve", "deploymentId": spec["deploymentId"], "sessionId": result["sessionId"], "turnId": result["turnId"], "observedAt": now()}}
+            adapter = self._adapter(spec)
+            result = adapter.turn(self, spec, message)
+            return {**result, "evidence": {"type": adapter.turn_evidence_type, "source": PROVIDER_ID, "product": spec["agentProduct"], "protocol": spec["interactionProtocol"], "deploymentId": spec["deploymentId"], "sessionId": result["sessionId"], "turnId": result["turnId"], "observedAt": now()}}
         if operation == "interface.deployment.promote":
             binding = (input_value or {}).get("resourceBinding")
             attributes = (binding or {}).get("attributes") or {}

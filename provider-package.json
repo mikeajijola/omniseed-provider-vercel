@@ -2,16 +2,16 @@
   "manifestVersion": "1.0",
   "id": "vercel",
   "organisation": "Vercel",
-  "version": "0.2.0-alpha.10",
+  "version": "0.2.0-alpha.11",
   "engineCompatibility": "omniseed.provider.protocol/1.0",
   "primitiveFamilies": ["agents", "connectors"],
   "implementations": [
-    { "family": "agents", "products": ["Eve", "Functions", "AI Gateway", "Deployment Services"] },
+    { "family": "agents", "products": ["Eve", "JSON Turn Runtime", "Functions", "Deployment Services"] },
     { "family": "connectors", "products": ["Functions", "Deployment Services"] }
   ],
   "operations": ["interface.deployment.observe", "interface.deployment.status", "interface.deployment.evidence", "interface.deployment.promote", "agent.semantic_turn"],
   "configurationSchema": "./provider-configuration.schema.json",
-  "observationTypes": ["vercel_deployment_state", "company_binding_state", "eve_agent_runtime_state"],
-  "evidenceTypes": ["vercel_api_response", "http_company_binding", "eve_agent_runtime_health", "eve_agent_semantic_turn"],
+  "observationTypes": ["vercel_deployment_state", "company_binding_state", "agent_runtime_state", "eve_agent_runtime_state"],
+  "evidenceTypes": ["vercel_api_response", "http_company_binding", "agent_runtime_health", "agent_semantic_turn", "eve_agent_runtime_health", "eve_agent_semantic_turn"],
   "permissions": ["vercel.project.read", "vercel.project.create", "vercel.deployment.read", "vercel.deployment.create", "http.endpoint.read", "omniseed.operation.invoke"]
 }
